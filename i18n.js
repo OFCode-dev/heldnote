@@ -27,6 +27,7 @@ const STRINGS = {
     'history.preview': 'Preview version',
     'history.restoreConfirm': 'Restore this version? The current text will remain available as an earlier version.',
     'history.restored': 'Earlier version restored',
+    'history.restoreFailed': 'Could not restore this version — try again',
   },
   tr: {
     'status.saving': 'Kaydediliyor…',
@@ -56,6 +57,7 @@ const STRINGS = {
     'history.preview': 'Sürümü önizle',
     'history.restoreConfirm': 'Bu sürüm geri yüklensin mi? Geçerli metin önceki bir sürüm olarak saklanmaya devam edecek.',
     'history.restored': 'Önceki sürüm geri yüklendi',
+    'history.restoreFailed': 'Bu sürüm geri yüklenemedi — tekrar deneyin',
   },
 };
 

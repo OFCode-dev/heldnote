@@ -3,6 +3,7 @@ import * as store from './store.js';
 import { t, setLanguage, detectLanguage } from './i18n.js';
 import { renderNotesPanel } from './notes-ui.js';
 import { renderEditor } from './editor.js';
+import { renderHistoryPanel } from './history-ui.js';
 
 let currentNoteId = null;
 let currentNoteRev = 0; // set by Task 18's editor via onRevChange; flush() target for lifecycle events
@@ -71,13 +72,24 @@ async function boot() {
   }
 
   let activeEditor = null;
+  function openEditor(id) {
+    currentNoteId = id;
+    currentNoteRev = 0;
+    if (activeEditor) activeEditor.destroy();
+    activeEditor = renderEditor(document.getElementById('editor-panel'), id, {
+      onRevChange: (rev) => { currentNoteRev = rev; },
+    });
+  }
+
   renderNotesPanel(document.getElementById('notes-panel'), {
     onSelect: (id) => {
-      currentNoteId = id;
-      currentNoteRev = 0;
-      if (activeEditor) activeEditor.destroy();
-      activeEditor = renderEditor(document.getElementById('editor-panel'), id, {
-        onRevChange: (rev) => { currentNoteRev = rev; },
+      openEditor(id);
+      // A restore changes the note's draft text underneath the editor, so the
+      // editor must reload from store rather than keep showing the pre-restore
+      // text; re-opening it (same as a fresh selection) is the simplest way to
+      // pick up what restoreVersion just wrote.
+      renderHistoryPanel(document.getElementById('history-panel'), id, {
+        onRestore: () => openEditor(id),
       });
     },
   });
