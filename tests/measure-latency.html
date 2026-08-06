@@ -15,7 +15,9 @@
         const start = performance.now();
         const rev = store.saveDraft(note.id, `sample-${i}-${'x'.repeat(500)}`);
         const receipt = await store.flush(note.id, rev);
-        samples.push(receipt.completedAt ? performance.now() - start : null);
+        if (receipt.completedAt) {
+          samples.push(performance.now() - start);
+        }
       }
       await store.close();
       samples.sort((a, b) => a - b);
