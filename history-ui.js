@@ -32,6 +32,12 @@ export function renderHistoryPanel(container, noteId, { onRestore } = {}) {
   container.innerHTML = `<h2>${t('history.title')}</h2><ul id="version-list"></ul><div id="version-preview"></div>`;
   const list = container.querySelector('#version-list');
   const preview = container.querySelector('#version-preview');
+  // Bumped on every preview click so a slow restore retry loop from an older
+  // click (still awaiting store.restoreVersion) can tell, once it finally
+  // settles, that the user has since previewed something else — and skip
+  // writing into a preview pane that has moved on. Same shape as editor.js's
+  // `destroyed` flag guarding its own late-arriving async callback.
+  let previewToken = 0;
 
   async function refresh() {
     const versions = await store.listVersions(noteId, {});
@@ -42,7 +48,9 @@ export function renderHistoryPanel(container, noteId, { onRestore } = {}) {
       button.textContent = new Date(info.at).toLocaleString();
       button.setAttribute('aria-label', t('history.preview'));
       button.addEventListener('click', async () => {
+        const token = ++previewToken;
         const full = await store.getVersion(noteId, info.seq);
+        if (token !== previewToken) return;
         preview.innerHTML = '';
         const pre = document.createElement('pre');
         pre.textContent = full.text;
@@ -52,10 +60,16 @@ export function renderHistoryPanel(container, noteId, { onRestore } = {}) {
           restoreButton.disabled = true;
           try {
             await restoreWithRetry(noteId, info.seq);
-            preview.innerHTML = `<p>${t('history.restored')}</p>`;
+            // refresh() and onRestore() reflect a real, already-committed change
+            // to the note and its history, so both run unconditionally even if
+            // the user has since moved on to preview something else. Only the
+            // preview pane's own text is gated by the token, so a late result
+            // does not overwrite whatever the user is now looking at.
+            if (token === previewToken) preview.innerHTML = `<p>${t('history.restored')}</p>`;
             await refresh();
             if (onRestore) onRestore();
           } catch (error) {
+            if (token !== previewToken) return;
             preview.innerHTML = `<p role="alert">${t('history.restoreFailed')}</p>`;
           }
         });
