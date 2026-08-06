@@ -411,3 +411,77 @@ test("two different notes do not contend for each other's lock", async () => {
   await store.releaseNoteLock(noteB.id);
   await store.close();
 });
+
+// --- Task 13: backup (export/import) ----------------------------------------
+
+test('export immediately after typing flushes first, so the export reflects the latest text', async () => {
+  await store.open({ dbName: `heldnote-test-${Date.now()}` });
+  const note = await store.createNote();
+  store.saveDraft(note.id, 'just typed');
+
+  const blob = await store.exportAll();
+  const parsed = JSON.parse(await blob.text());
+  const exportedNote = parsed.notes.find((n) => n.id === note.id);
+  assertEquals(exportedNote.text, 'just typed');
+
+  await store.close();
+});
+
+test('an export followed by a wipe and an import (replace) returns the app to its previous state', async () => {
+  const dbName = `heldnote-test-${Date.now()}`;
+  await store.open({ dbName });
+  const note = await store.createNote();
+  const rev = store.saveDraft(note.id, 'keep me');
+  await store.flush(note.id, rev);
+  await store.commitVersion(note.id);
+
+  const blob = await store.exportAll();
+  await store.close();
+  indexedDB.deleteDatabase(dbName);
+
+  await store.open({ dbName });
+  const file = new File([blob], 'backup.json', { type: 'application/json' });
+  const result = await store.importAll(file, { mode: 'replace' });
+  assertEquals(result.notesAdded, 1);
+
+  const list = await store.listNotes({});
+  assertEquals(list.length, 1);
+  const restored = await store.getNote(list[0].id);
+  assertEquals(restored.text, 'keep me');
+
+  await store.close();
+});
+
+test('import as copies assigns fresh note IDs and keeps the original notes', async () => {
+  const dbName = `heldnote-test-${Date.now()}`;
+  await store.open({ dbName });
+  const note = await store.createNote();
+  const rev = store.saveDraft(note.id, 'original');
+  await store.flush(note.id, rev);
+
+  const blob = await store.exportAll();
+  const file = new File([blob], 'backup.json', { type: 'application/json' });
+  const result = await store.importAll(file, { mode: 'copy' });
+  assertEquals(result.notesCopied, 1);
+
+  const list = await store.listNotes({});
+  assertEquals(list.length, 2, 'expected the original plus one copy');
+  assert(list.some((n) => n.id === note.id), 'the original note must remain');
+
+  await store.close();
+});
+
+test('importing a file that is not valid JSON fails with invalid-import and changes nothing', async () => {
+  await store.open({ dbName: `heldnote-test-${Date.now()}` });
+  const before = await store.listNotes({});
+
+  const file = new File(['not json'], 'bad.json', { type: 'application/json' });
+  let code;
+  await store.importAll(file, { mode: 'replace' }).catch((e) => { code = e.code; });
+  assertEquals(code, 'invalid-import');
+
+  const after = await store.listNotes({});
+  assertEquals(after.length, before.length);
+
+  await store.close();
+});

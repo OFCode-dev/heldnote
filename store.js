@@ -885,3 +885,193 @@ export async function releaseNoteLock(id) {
     emit({ type: 'lock-changed', noteId: id, granted: false });
   }
 }
+
+// --- backup: export / import ------------------------------------------------
+//
+// exportAll()/importAll() are the app's only backup mechanism in v1 (no sync).
+// exportAll flushes each note's pending revision before reading it, so an
+// export immediately after typing reflects the latest text rather than
+// whatever was last durable. importAll validates schemaVersion/shape entirely
+// before touching anything (parseImportFile runs before withGlobalLock is even
+// requested), so a malformed file changes nothing. Both modes hold
+// withGlobalLock (Task 10/12) since, like runMaintenance, they touch every
+// store.
+//
+// The part that isn't in the brief this was written against: keeping the
+// per-note in-memory bookkeeping built up over Tasks 6-11 (revCounters,
+// durableRevs, draftQueues, lastVersionText, memoryOnlyText, noteGeneration)
+// consistent with what importAll just put on disk.
+//
+//  - replace mode deletes and rewrites every note/draft/version in one
+//    transaction, so every one of those Maps is reset to empty first (an
+//    entry for a note id that isn't in the import now describes a note that
+//    no longer exists on disk) and then reseeded per imported note from the
+//    data just written: revCounters and durableRevs both to note.localRev
+//    (exactly what getNote() would derive from the draft record just
+//    written), and lastVersionText to the newest imported version's text, but
+//    only when that text still matches the note's current draft text
+//    (mirroring commitVersion's own dedup invariant — if the draft has moved
+//    on from the newest version, there is nothing to dedup against yet).
+//    Skipping the reseed would leave two real bugs: a subsequent saveDraft()
+//    would restart numbering at rev 1 while the record on disk already
+//    carries the imported localRev (harmless by itself, since draftQueues is
+//    also cleared and the next write still lands, but the numbers would no
+//    longer describe real history), and — the serious one — durableRevs
+//    staying at 0 for that id means flush()'s fast path can never answer
+//    "already durable" for the imported revision. flush() has no other path
+//    that resolves without a write in flight, so a flush() call for an
+//    imported note's current revision, issued before any further edit,would
+//    hang forever.
+//  - copy mode assigns brand-new ids alongside the existing notes, so nothing
+//    existing needs clearing (its on-disk state hasn't changed) — only the
+//    fresh ids need the same seeding, for the same reason.
+//
+// heldLocks (Web Locks a tab holds for a note it's editing) and
+// versionCommitsStopped (a whole-connection quota latch) are deliberately
+// left untouched by either mode: the former is about who has editing access
+// right now, not about what's on disk, and the latter describes storage
+// pressure, not import data.
+
+const SCHEMA_VERSION = 1;
+
+export async function exportAll() {
+  const noteSummaries = await listNotes({ includeTrashed: true, limit: 100000 });
+  for (const summary of noteSummaries) {
+    const rev = revCounters.get(summary.id);
+    if (rev) await flush(summary.id, rev).catch(() => {});
+  }
+
+  const notes = [];
+  for (const summary of noteSummaries) {
+    notes.push(await getNote(summary.id));
+  }
+
+  const versions = [];
+  for (const summary of noteSummaries) {
+    const infos = await listVersions(summary.id, {});
+    for (const info of infos) {
+      versions.push({ noteId: summary.id, ...(await getVersion(summary.id, info.seq)) });
+    }
+  }
+
+  const payload = { schemaVersion: SCHEMA_VERSION, exportedAt: Date.now(), notes, versions };
+  return new Blob([JSON.stringify(payload)], { type: 'application/json' });
+}
+
+async function parseImportFile(file) {
+  let text;
+  try {
+    text = await file.text();
+  } catch (_e) {
+    throw Object.assign(new Error('could not read file'), { code: 'invalid-import' });
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch (_e) {
+    throw Object.assign(new Error('file is not valid JSON'), { code: 'invalid-import' });
+  }
+  if (typeof parsed.schemaVersion !== 'number' || !Array.isArray(parsed.notes) || !Array.isArray(parsed.versions)) {
+    throw Object.assign(new Error('file does not have the expected shape'), { code: 'invalid-import' });
+  }
+  if (parsed.schemaVersion > SCHEMA_VERSION) {
+    throw Object.assign(new Error(`file schemaVersion ${parsed.schemaVersion} is newer than this app understands`), { code: 'invalid-import' });
+  }
+  return parsed;
+}
+
+function noteRecordFrom(note, idOverride) {
+  return {
+    id: idOverride || note.id, title: note.title, createdAt: note.createdAt, updatedAt: note.updatedAt,
+    localRev: note.localRev, pinned: note.pinned, pinKey: note.pinned ? 1 : 0,
+    isDeleted: note.deletedAt ? 1 : 0, ...(note.deletedAt ? { deletedAt: note.deletedAt } : {}),
+  };
+}
+
+// noteId -> { seq, text } of the highest-seq (newest) version in `versions`,
+// used to decide what lastVersionText should be seeded to after an import.
+function newestVersionTextByNoteId(versions) {
+  const newest = new Map();
+  for (const v of versions) {
+    const current = newest.get(v.noteId);
+    if (!current || v.seq > current.seq) newest.set(v.noteId, { seq: v.seq, text: v.text });
+  }
+  return newest;
+}
+
+// Reseeds revCounters/durableRevs/lastVersionText for one just-imported note,
+// exactly mirroring what getNote() would derive from the draft record
+// importAll just wrote — see the comment block above this section for why
+// this is required, not optional.
+function seedImportedNoteState(id, note, newestVersionText) {
+  revCounters.set(id, note.localRev);
+  durableRevs.set(id, note.localRev);
+  if (newestVersionText !== undefined && newestVersionText === note.text) {
+    lastVersionText.set(id, newestVersionText);
+  }
+}
+
+export async function importAll(file, { mode }) {
+  const parsed = await parseImportFile(file);
+
+  return withGlobalLock(async () => {
+    if (mode === 'replace') {
+      const tx = openTransaction(conn, ['notes', 'drafts', 'versions'], 'readwrite', { durability: 'strict' });
+      tx.objectStore('notes').clear();
+      tx.objectStore('drafts').clear();
+      tx.objectStore('versions').clear();
+      for (const note of parsed.notes) {
+        tx.objectStore('notes').put(noteRecordFrom(note));
+        tx.objectStore('drafts').put({ noteId: note.id, text: note.text, localRev: note.localRev, savedAt: note.updatedAt, byteLength: new TextEncoder().encode(note.text).length });
+      }
+      for (const v of parsed.versions) {
+        tx.objectStore('versions').put({ noteId: v.noteId, seq: v.seq, at: v.at, sourceRev: v.sourceRev, text: v.text, byteLength: new TextEncoder().encode(v.text).length });
+      }
+      await awaitTransactionComplete(tx);
+
+      // Every note/draft/version that existed before this transaction is gone
+      // now, except whatever id happens to be reused by the import, so every
+      // per-note Map is reset to empty first...
+      draftQueues.clear();
+      revCounters.clear();
+      durableRevs.clear();
+      lastVersionText.clear();
+      memoryOnlyText.clear();
+      noteGeneration.clear();
+
+      // ...then reseeded per imported note from what was just written.
+      const newestText = newestVersionTextByNoteId(parsed.versions);
+      for (const note of parsed.notes) {
+        seedImportedNoteState(note.id, note, newestText.get(note.id)?.text);
+      }
+
+      return { notesAdded: parsed.notes.length, notesCopied: 0, versionsAdded: parsed.versions.length, skipped: 0 };
+    }
+
+    const idMap = new Map();
+    const tx = openTransaction(conn, ['notes', 'drafts', 'versions'], 'readwrite', { durability: 'strict' });
+    for (const note of parsed.notes) {
+      const freshId = newId();
+      idMap.set(note.id, freshId);
+      tx.objectStore('notes').put(noteRecordFrom(note, freshId));
+      tx.objectStore('drafts').put({ noteId: freshId, text: note.text, localRev: note.localRev, savedAt: note.updatedAt, byteLength: new TextEncoder().encode(note.text).length });
+    }
+    for (const v of parsed.versions) {
+      const freshId = idMap.get(v.noteId);
+      tx.objectStore('versions').put({ noteId: freshId, seq: v.seq, at: v.at, sourceRev: v.sourceRev, text: v.text, byteLength: new TextEncoder().encode(v.text).length });
+    }
+    await awaitTransactionComplete(tx);
+
+    // Fresh ids only: every existing note's on-disk state is untouched, so
+    // only the new copies need revCounters/durableRevs/lastVersionText seeded
+    // to what was just written under their new id.
+    const remappedVersions = parsed.versions.map((v) => ({ ...v, noteId: idMap.get(v.noteId) }));
+    const newestText = newestVersionTextByNoteId(remappedVersions);
+    for (const note of parsed.notes) {
+      const freshId = idMap.get(note.id);
+      seedImportedNoteState(freshId, note, newestText.get(freshId)?.text);
+    }
+
+    return { notesAdded: 0, notesCopied: parsed.notes.length, versionsAdded: parsed.versions.length, skipped: 0 };
+  });
+}
