@@ -54,6 +54,12 @@ export async function close() {
   }
   memoryFallback = null;
   listeners = new Set();
+  // Revision bookkeeping describes the connection that is going away. Keeping
+  // it would let flush() answer "already durable" from a previous database
+  // after a delete/reopen or an import that reuses note ids.
+  draftQueues.clear();
+  revCounters.clear();
+  durableRevs.clear();
 }
 
 function newId() {
@@ -287,11 +293,15 @@ async function runDraftWrite(noteId) {
     q.pendingRev = null;
 
     const now = Date.now();
-    const byteLength = new TextEncoder().encode(text).length;
-    const title = deriveTitle(text);
 
     let receipt;
     try {
+      // Kept inside the try: a throw here (a non-string payload reaching
+      // deriveTitle, say) would otherwise escape the loop, skipping both
+      // resolveWaiters and the inFlight reset, and wedge this note's queue.
+      const byteLength = new TextEncoder().encode(text).length;
+      const title = deriveTitle(text);
+
       const tx = openTransaction(conn, ['notes', 'drafts'], 'readwrite', { durability: 'strict' });
       tx.objectStore('drafts').put({ noteId, text, localRev: rev, savedAt: now, byteLength });
       const noteStore = tx.objectStore('notes');
