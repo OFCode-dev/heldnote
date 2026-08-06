@@ -290,7 +290,15 @@ async function runDraftWrite(noteId) {
   const q = queueFor(noteId);
   q.inFlight = true;
 
-  while (q.pendingText !== null) {
+  // Re-checked once per iteration: an iteration that started before a restore
+  // took the lock is safe (its transaction was created first, so it commits
+  // ahead of the restore and its text is what the restore's draft read sees),
+  // but a *new* iteration started under the lock would create its transaction
+  // after that draft read and before the restore's write, which is exactly the
+  // interleaving that loses text. Exiting here leaves the payload in
+  // pendingText with inFlight false, which is what restoreVersion's finally
+  // expects to find.
+  while (q.pendingText !== null && !q.restoring) {
     const text = q.pendingText;
     const rev = q.pendingRev;
     // Read at dequeue, before any await, so it names the generation this write
@@ -324,8 +332,11 @@ async function runDraftWrite(noteId) {
       noteStore.put(noteRecord);
       await awaitTransactionComplete(tx);
 
-      durableRevs.set(noteId, rev);
-      receipt = { noteId, requestedRev: rev, durableRev: rev, completedAt: Date.now() };
+      // Monotonic: a restore may already have published a higher revision, and
+      // durableRevs is what flush() trusts to answer "already on disk".
+      const durableRev = Math.max(durableRevs.get(noteId) || 0, rev);
+      durableRevs.set(noteId, durableRev);
+      receipt = { noteId, requestedRev: rev, durableRev, completedAt: Date.now() };
       emit({ type: 'saved', ...receipt });
     } catch (error) {
       receipt = { noteId, requestedRev: rev, durableRev: durableRevs.get(noteId) || 0, completedAt: Date.now(), error };
@@ -424,20 +435,37 @@ export async function getVersion(id, seq) {
 // Restoring is an edit, not a rewind: it adds versions and never removes one.
 // Three hazards are handled here.
 //
-// 1. Text that was drafted but never versioned would be overwritten, so it is
-//    snapshotted as a pre-restore checkpoint version first.
-// 2. A draft write already in flight when the restore starts would land after
-//    it. Every such write has necessarily created its transaction before the
-//    restore's, so IndexedDB commits it first and the restore wins on disk —
-//    and because the restore reads the draft after flushing, that write's text
-//    is what the checkpoint captures. Nothing is lost either way.
-// 3. Text typed *during* the restore would otherwise start its own transaction
-//    mid-restore, commit before the restore's transaction, and be silently
-//    clobbered by it — after having been reported as saved. The `restoring`
-//    lock closes that window: saveDraft keeps accepting and coalescing text but
-//    does not start a write while the lock is held, and the finally block below
-//    runs whatever accumulated once the restore is durable, so the edit becomes
-//    the next revision on top of the restored text instead of racing it.
+// A restore runs *two* transactions, and they are different ordering points.
+// Keeping them straight is the whole safety argument:
+//
+//   - the DRAFT-READ transaction (readonly, in runRestore) decides what the
+//     checkpoint captures: it sees every draft write committed before it;
+//   - the WRITE transaction (readwrite, later in runRestore) decides what ends
+//     up on disk: IndexedDB commits same-scope transactions in creation order,
+//     so every draft write whose transaction was created earlier commits first
+//     and is then overwritten by this one.
+//
+// A draft write is only safe when it is on the correct side of BOTH. Created
+// before the draft read: its text is checkpointed into history, and the restore
+// still wins the draft record. Created after the write transaction: it is an
+// ordinary post-restore edit. Created *between* them, however, it is neither
+// checkpointed nor kept — it commits, is reported as saved, and is then
+// silently overwritten. That is the window this code has to keep empty.
+//
+// Three hazards follow from that:
+//
+// 1. Text drafted but never versioned would be overwritten, so the draft read
+//    snapshots it as a pre-restore checkpoint version first.
+// 2. A draft write already in flight when the lock is taken is safe by
+//    construction: its transaction predates both of the restore's.
+// 3. Any write that starts *after* the lock is taken could land in the unsafe
+//    window between them. The `restoring` lock keeps that window empty from
+//    both directions: saveDraft will not launch a new write while it is held,
+//    and runDraftWrite's loop re-checks it each iteration so an already-running
+//    loop stops draining instead of starting further transactions. Text is
+//    still accepted and coalesced throughout; the finally block below runs
+//    whatever accumulated once the restore is durable, so the edit becomes the
+//    next revision on top of the restored text instead of racing it.
 //
 // The generation counter is kept as a second line of defence for a write that
 // somehow reaches runDraftWrite across a restore boundary; note that with the
@@ -458,6 +486,18 @@ export async function restoreVersion(id, seq) {
   }
 
   const q = queueFor(id);
+  // Taking the lock is the serialization point for concurrent restores. The
+  // check and the set are adjacent and synchronous, so whichever restore's
+  // flush() resolves first wins it outright; a second restore rejects rather
+  // than racing. Two concurrent restores would otherwise both read currentRev
+  // and both call nextSeq() before either opened its write transaction, so
+  // they could compute the same seq and the later put() would overwrite the
+  // earlier one's checkpoint — deleting the artifact this function exists to
+  // create. The lock cannot be taken any earlier than this: the flush() above
+  // needs the draft writer to keep running, which the lock now suppresses.
+  if (q.restoring) {
+    throw Object.assign(new Error('a restore is already in progress for this note'), { code: 'restore-in-progress' });
+  }
   // Held from here until this restore is durable. Everything after this point
   // runs inside try/finally: leaving the lock set would wedge the note's queue
   // permanently, so a failed restore must still release it.
@@ -465,19 +505,9 @@ export async function restoreVersion(id, seq) {
   noteGeneration.set(id, currentGeneration(id) + 1);
 
   try {
-    if (q.pendingText !== null) {
-      // Queued before the lock and never started. The restore supersedes it, so
-      // its waiters are settled here rather than left for a write that will
-      // never run — flush() only ever settles through a completed write.
-      const supersededRev = q.pendingRev;
-      q.pendingText = null;
-      q.pendingRev = null;
-      const error = Object.assign(new Error('queued write superseded by a restore'), { code: 'stale-generation' });
-      const receipt = { noteId: id, requestedRev: supersededRev, durableRev: durableRevs.get(id) || 0, completedAt: Date.now(), error };
-      emit({ type: 'save-failed', ...receipt });
-      resolveWaiters(id, receipt);
-    }
-
+    // pendingText is deliberately left alone. Whatever is queued — typed before
+    // the lock or during the restore — is deferred, not discarded, and the
+    // finally below runs it on top of the restored text.
     return await runRestore(id, target, currentRev);
   } finally {
     q.restoring = false;
@@ -500,7 +530,12 @@ async function runRestore(id, target, currentRev) {
   const needsCheckpoint = currentDraft.text !== newestVersionText;
 
   const nextRev = currentRev + 1;
-  revCounters.set(id, nextRev);
+  // Monotonic: currentRev was read before this restore's async work, so edits
+  // that arrived meanwhile may already have claimed higher revisions. Writing
+  // nextRev back unconditionally would hand the next saveDraft an already-used
+  // number, and flush() for that number could then resolve off the fast path
+  // for text that has not been written.
+  revCounters.set(id, Math.max(revCounters.get(id) || 0, nextRev));
   // durableRevs is NOT set here. flush()'s fast path treats durableRevs as the
   // sole authority for "this revision is on disk", so setting it before the
   // transaction below actually commits would let a concurrent flush(id, nextRev)
@@ -535,7 +570,7 @@ async function runRestore(id, target, currentRev) {
 
   await awaitTransactionComplete(tx);
 
-  durableRevs.set(id, nextRev);
+  durableRevs.set(id, Math.max(durableRevs.get(id) || 0, nextRev));
   lastVersionText.set(id, target.text);
   emit({ type: 'note-changed', noteId: id });
 
