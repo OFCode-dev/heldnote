@@ -1,6 +1,7 @@
 // app.js
 import * as store from './store.js';
 import { t, setLanguage, detectLanguage } from './i18n.js';
+import { renderNotesPanel } from './notes-ui.js';
 
 let currentNoteId = null;
 let currentNoteRev = 0; // set by Task 18's editor via onRevChange; flush() target for lifecycle events
@@ -67,6 +68,10 @@ async function boot() {
   if (!status.available) {
     showAlert(t(STORAGE_REASON_KEYS[status.reason] || 'error.storageUnavailable'));
   }
+
+  renderNotesPanel(document.getElementById('notes-panel'), {
+    onSelect: (id) => { currentNoteId = id; /* Task 18 wires the editor to this */ },
+  });
 
   window.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'hidden' && currentNoteId) {
