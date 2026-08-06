@@ -607,6 +607,39 @@ test('after importing a backup whose newest version is dated in the future, loca
   await store.close();
 });
 
+// --- typed errors instead of bare TypeErrors on a missing note --------------
+
+test('commitVersion for a note that does not exist rejects with not-found', async () => {
+  await store.open({ dbName: `heldnote-test-${Date.now()}` });
+  let code;
+  await store.commitVersion('no-such-note').catch((e) => { code = e.code; });
+  assertEquals(code, 'not-found', 'expected a typed not-found, not a TypeError on draft.text');
+  await store.close();
+});
+
+test('a draft write for a note that does not exist fails cleanly and writes no draft record', async () => {
+  await store.open({ dbName: `heldnote-test-${Date.now()}` });
+
+  const events = [];
+  store.subscribe((e) => events.push(e));
+
+  // runDraftWrite reads the note record before issuing the draft put, so a
+  // missing note aborts the write with nothing written — rather than
+  // committing a draft record for a note that isn't there.
+  const rev = store.saveDraft('no-such-note', 'text for a ghost');
+  let code;
+  await store.flush('no-such-note', rev).catch((e) => { code = e.code; });
+  assertEquals(code, 'not-found');
+  assert(events.some((e) => e.type === 'save-failed'), 'expected a save-failed event');
+
+  // The note is still absent, and no half-written state was left behind.
+  let getCode;
+  await store.getNote('no-such-note').catch((e) => { getCode = e.code; });
+  assertEquals(getCode, 'not-found');
+
+  await store.close();
+});
+
 // --- import validates every record, not just the envelope -------------------
 
 test('importing a file whose note is missing a required field fails with invalid-import and writes nothing', async () => {

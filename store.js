@@ -401,9 +401,19 @@ async function runDraftWrite(noteId) {
         throw Object.assign(new Error('stale write superseded by a restore'), { code: 'stale-generation' });
       }
       const tx = openTransaction(conn, ['notes', 'drafts'], 'readwrite', { durability: 'strict' });
-      tx.objectStore('drafts').put({ noteId, text, localRev: rev, savedAt: now, byteLength });
+      // The note record is read BEFORE the draft is written. Issued the other
+      // way round, a get() that fails (or a note deleted or replaced by an
+      // import out from under this writer) still leaves the drafts.put()
+      // issued, and nothing aborts the transaction — so it commits, stranding
+      // a draft record for a note that no longer exists, or overwriting
+      // freshly imported text with a stale pre-import draft. Throwing before
+      // the put is issued means the transaction carries no change at all.
       const noteStore = tx.objectStore('notes');
       const noteRecord = await requestToPromise(noteStore.get(noteId));
+      if (!noteRecord) {
+        throw Object.assign(new Error(`note ${noteId} not found`), { code: 'not-found' });
+      }
+      tx.objectStore('drafts').put({ noteId, text, localRev: rev, savedAt: now, byteLength });
       noteRecord.title = title;
       noteRecord.updatedAt = now;
       noteRecord.localRev = rev;
@@ -441,9 +451,14 @@ async function runDraftWrite(noteId) {
             const retryByteLength = new TextEncoder().encode(text).length;
             const retryTitle = deriveTitle(text);
             const retryTx = openTransaction(conn, ['notes', 'drafts'], 'readwrite', { durability: 'strict' });
-            retryTx.objectStore('drafts').put({ noteId, text, localRev: rev, savedAt: now, byteLength: retryByteLength });
+            // Same read-before-write ordering as the first attempt, for the
+            // same reason.
             const retryNoteStore = retryTx.objectStore('notes');
             const retryNoteRecord = await requestToPromise(retryNoteStore.get(noteId));
+            if (!retryNoteRecord) {
+              throw Object.assign(new Error(`note ${noteId} not found`), { code: 'not-found' });
+            }
+            retryTx.objectStore('drafts').put({ noteId, text, localRev: rev, savedAt: now, byteLength: retryByteLength });
             retryNoteRecord.title = retryTitle;
             retryNoteRecord.updatedAt = now;
             retryNoteRecord.localRev = rev;
@@ -502,24 +517,34 @@ export async function commitVersion(id) {
   if (currentRev > 0) {
     await flush(id, currentRev).catch(() => {});
   }
-  const draftTx = openTransaction(conn, ['drafts'], 'readonly');
-  const draft = await requestToPromise(draftTx.objectStore('drafts').get(id));
-
-  const previousText = lastVersionText.get(id);
-  if (previousText === draft.text) {
-    return null;
-  }
-
   // Second check-and-set, synchronous (no await between them), exactly like
   // restoreVersion's own lock acquisition: a restore (or another commit) may
-  // have started during the flush/draft-read above, and this is the point
-  // that must not race it. nextSeq() + the write below are the vulnerable
-  // "allocate a seq, then write a version record in a later transaction"
-  // shape restoreVersion's lock exists to fence — commitVersion has the same
-  // shape and reuses the same q.restoring flag rather than a second one.
+  // have started during the flush above, and this is the point that must not
+  // race it. nextSeq() + the write below are the vulnerable "allocate a seq,
+  // then write a version record in a later transaction" shape restoreVersion's
+  // lock exists to fence — commitVersion has the same shape and reuses the
+  // same q.restoring flag rather than a second one.
+  //
+  // The flush() above must stay OUTSIDE the lock (it needs the draft writer to
+  // keep running, which the lock suppresses), but the draft read must be INSIDE
+  // it. Read before the lock, a restore could start and finish in the gap, and
+  // this commit would then snapshot the pre-restore text — writing a spurious
+  // duplicate of a state the restore had already checkpointed.
   if (q.restoring) return null;
   q.restoring = true;
   try {
+    const draftTx = openTransaction(conn, ['drafts'], 'readonly');
+    const draft = await requestToPromise(draftTx.objectStore('drafts').get(id));
+    // No draft record means no note: say so with a code callers can branch on
+    // rather than letting draft.text raise a bare TypeError.
+    if (!draft) {
+      throw Object.assign(new Error(`note ${id} not found`), { code: 'not-found' });
+    }
+
+    if (lastVersionText.get(id) === draft.text) {
+      return null;
+    }
+
     // nextSeq() also opens a transaction scoped to 'versions', so it is
     // exposed to exactly the same fault (real quota pressure or the
     // fault-injection seam) as the write below — a quota-class failure can
