@@ -134,7 +134,14 @@ export async function listNotes({ query, includeTrashed = false, limit, before }
       // check is free (already in hand from the cursor); only fall through to
       // a second store read of the draft's body when the title alone doesn't
       // satisfy the query, so a title match never pays for a drafts lookup.
-      let matchesQuery = !lowerQuery || record.title.toLowerCase().includes(lowerQuery);
+      // `record.title || ''` is belt-and-braces against a record whose title is
+      // not a string. parseImportFile now rejects such a file outright, but a
+      // record written before that validation existed (or by any path not yet
+      // imagined) would otherwise throw here — inside an async cursor handler,
+      // where the throw becomes an unhandled rejection rather than reaching the
+      // surrounding reject(), leaving listNotes() pending forever. A hung note
+      // list is a far worse outcome than an untitled note failing to match.
+      let matchesQuery = !lowerQuery || String(record.title || '').toLowerCase().includes(lowerQuery);
       if (!matchesQuery) {
         // Explicit try/catch: this handler is async, so a rejection from the
         // awaited request would otherwise become an unhandled rejection
@@ -142,7 +149,7 @@ export async function listNotes({ query, includeTrashed = false, limit, before }
         // listNotes()'s own await pending forever instead of failing loudly.
         try {
           const draftRecord = await requestToPromise(draftsStore.get(record.id));
-          matchesQuery = !!draftRecord && draftRecord.text.toLowerCase().includes(lowerQuery);
+          matchesQuery = !!draftRecord && String(draftRecord.text || '').toLowerCase().includes(lowerQuery);
         } catch (error) {
           reject(error);
           return;
@@ -1001,6 +1008,27 @@ export async function releaseNoteLock(id) {
 
 const SCHEMA_VERSION = 1;
 
+// The `meta` store (db.js creates it for theme/zoom/language/last-opened-note)
+// has no writer yet — settings persistence is its own feature, not this one.
+// Export and import carry it anyway, so that whenever that feature arrives a
+// backup round-trips settings without a second change to the file format, and
+// so no backup taken in the meantime silently drops data another module wrote.
+async function readAllMeta() {
+  const tx = openTransaction(conn, ['meta'], 'readonly');
+  const entries = [];
+  await new Promise((resolve, reject) => {
+    const req = tx.objectStore('meta').openCursor();
+    req.onsuccess = () => {
+      const cursor = req.result;
+      if (!cursor) { resolve(); return; }
+      entries.push(cursor.value);
+      cursor.continue();
+    };
+    req.onerror = () => reject(req.error);
+  });
+  return entries;
+}
+
 export async function exportAll() {
   // Two phases, deliberately split across the lock boundary.
   //
@@ -1050,9 +1078,49 @@ export async function exportAll() {
       }
     }
 
-    const payload = { schemaVersion: SCHEMA_VERSION, exportedAt: Date.now(), notes, versions };
+    const meta = await readAllMeta();
+
+    const payload = { schemaVersion: SCHEMA_VERSION, exportedAt: Date.now(), notes, versions, meta };
     return new Blob([JSON.stringify(payload)], { type: 'application/json' });
   });
+}
+
+// Per-record shape validation. store-api.md promises the file is validated
+// "before touching anything", but only the envelope was ever checked, so a
+// hand-edited or truncated backup could write records with undefined fields —
+// and an undefined `title` then hangs listNotes()'s search cursor forever.
+// Every field the write paths below dereference is checked here.
+
+function isFiniteNumber(value) {
+  return typeof value === 'number' && Number.isFinite(value);
+}
+
+function isValidImportedNote(note) {
+  return Boolean(note) && typeof note === 'object' && !Array.isArray(note)
+    && typeof note.id === 'string' && note.id.length > 0
+    && typeof note.title === 'string'
+    && typeof note.text === 'string'
+    && isFiniteNumber(note.createdAt)
+    && isFiniteNumber(note.updatedAt)
+    && isFiniteNumber(note.localRev)
+    && typeof note.pinned === 'boolean'
+    // exportAll writes deletedAt: null for a live note; a trashed one carries a
+    // timestamp; a hand-written file may omit the key entirely.
+    && (note.deletedAt === undefined || note.deletedAt === null || isFiniteNumber(note.deletedAt));
+}
+
+function isValidImportedVersion(version) {
+  return Boolean(version) && typeof version === 'object' && !Array.isArray(version)
+    && typeof version.noteId === 'string' && version.noteId.length > 0
+    && isFiniteNumber(version.seq)
+    && isFiniteNumber(version.at)
+    && isFiniteNumber(version.sourceRev)
+    && typeof version.text === 'string';
+}
+
+function isValidImportedMetaEntry(entry) {
+  return Boolean(entry) && typeof entry === 'object' && !Array.isArray(entry)
+    && typeof entry.key === 'string' && entry.key.length > 0;
 }
 
 async function parseImportFile(file) {
@@ -1074,7 +1142,38 @@ async function parseImportFile(file) {
   if (parsed.schemaVersion > SCHEMA_VERSION) {
     throw Object.assign(new Error(`file schemaVersion ${parsed.schemaVersion} is newer than this app understands`), { code: 'invalid-import' });
   }
-  return parsed;
+  // `meta` is optional: files written before exportAll carried settings simply
+  // do not have the key, and refusing those would break every existing backup.
+  const meta = parsed.meta === undefined ? [] : parsed.meta;
+  if (!Array.isArray(meta)) {
+    throw Object.assign(new Error('file does not have the expected shape'), { code: 'invalid-import' });
+  }
+
+  const noteIds = new Set();
+  for (const note of parsed.notes) {
+    if (!isValidImportedNote(note)) {
+      throw Object.assign(new Error('file contains a note that is missing required fields'), { code: 'invalid-import' });
+    }
+    noteIds.add(note.id);
+  }
+  for (const version of parsed.versions) {
+    if (!isValidImportedVersion(version)) {
+      throw Object.assign(new Error('file contains a version that is missing required fields'), { code: 'invalid-import' });
+    }
+    // A version naming a note the file does not carry has nowhere to go: copy
+    // mode would map it to an undefined id and abort the whole transaction on
+    // a DataError, and replace mode would write an unreachable orphan record.
+    if (!noteIds.has(version.noteId)) {
+      throw Object.assign(new Error(`file contains a version for unknown note ${version.noteId}`), { code: 'invalid-import' });
+    }
+  }
+  for (const entry of meta) {
+    if (!isValidImportedMetaEntry(entry)) {
+      throw Object.assign(new Error('file contains a settings entry that is missing required fields'), { code: 'invalid-import' });
+    }
+  }
+
+  return { ...parsed, meta };
 }
 
 function noteRecordFrom(note, idOverride) {
@@ -1113,10 +1212,16 @@ export async function importAll(file, { mode }) {
 
   return withGlobalLock(async () => {
     if (mode === 'replace') {
-      const tx = openTransaction(conn, ['notes', 'drafts', 'versions'], 'readwrite', { durability: 'strict' });
+      const tx = openTransaction(conn, ['notes', 'drafts', 'versions', 'meta'], 'readwrite', { durability: 'strict' });
       tx.objectStore('notes').clear();
       tx.objectStore('drafts').clear();
       tx.objectStore('versions').clear();
+      // Replace means replace: settings from the file take over wholesale, the
+      // same way notes do.
+      tx.objectStore('meta').clear();
+      for (const entry of parsed.meta) {
+        tx.objectStore('meta').put(entry);
+      }
       for (const note of parsed.notes) {
         tx.objectStore('notes').put(noteRecordFrom(note));
         tx.objectStore('drafts').put({ noteId: note.id, text: note.text, localRev: note.localRev, savedAt: note.updatedAt, byteLength: new TextEncoder().encode(note.text).length });
@@ -1164,7 +1269,14 @@ export async function importAll(file, { mode }) {
     }
 
     const idMap = new Map();
-    const tx = openTransaction(conn, ['notes', 'drafts', 'versions'], 'readwrite', { durability: 'strict' });
+    const tx = openTransaction(conn, ['notes', 'drafts', 'versions', 'meta'], 'readwrite', { durability: 'strict' });
+    // Notes are copied alongside the existing ones, but settings are global and
+    // have no "copy" — a key can hold one value. The file's entries win, which
+    // is the only behaviour that makes a copy-mode import of a backup taken on
+    // another device carry that device's settings across.
+    for (const entry of parsed.meta) {
+      tx.objectStore('meta').put(entry);
+    }
     for (const note of parsed.notes) {
       const freshId = newId();
       idMap.set(note.id, freshId);

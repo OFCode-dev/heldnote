@@ -1,4 +1,4 @@
-import { test, assert, assertEquals } from './test-harness.js';
+import { test, assert, assertEquals, withTimeout } from './test-harness.js';
 import * as store from '../store.js';
 import { setFaultInjection, clearFaultInjection } from '../db.js';
 
@@ -604,6 +604,94 @@ test('after importing a backup whose newest version is dated in the future, loca
   assertEquals((await store.getVersion('future-note', 2)).text, 'imported text', 'the future-dated imported version must not be overwritten');
   assertEquals((await store.getVersion('future-note', 3)).text, 'typed locally', 'the first local version must not be overwritten');
 
+  await store.close();
+});
+
+// --- import validates every record, not just the envelope -------------------
+
+test('importing a file whose note is missing a required field fails with invalid-import and writes nothing', async () => {
+  await store.open({ dbName: `heldnote-test-${Date.now()}` });
+  const before = await store.listNotes({ includeTrashed: true });
+
+  // Envelope is perfectly well-formed; the note inside is missing `title`.
+  // Written as-is, that record makes listNotes()'s search cursor throw inside
+  // an async handler and hang the note list forever.
+  const payload = {
+    schemaVersion: 1,
+    notes: [{ id: 'broken', text: 'body', createdAt: 1, updatedAt: 1, pinned: false, localRev: 0 }],
+    versions: [],
+  };
+  let code;
+  await store.importAll(new File([JSON.stringify(payload)], 'bad.json'), { mode: 'replace' }).catch((e) => { code = e.code; });
+  assertEquals(code, 'invalid-import');
+
+  const after = await store.listNotes({ includeTrashed: true });
+  assertEquals(after.length, before.length, 'a rejected import must not partially write');
+
+  await store.close();
+});
+
+test('importing a file whose version has a non-numeric seq fails with invalid-import', async () => {
+  await store.open({ dbName: `heldnote-test-${Date.now()}` });
+  const payload = {
+    schemaVersion: 1,
+    notes: [{ id: 'n', title: 't', text: 't', createdAt: 1, updatedAt: 1, pinned: false, deletedAt: null, localRev: 0 }],
+    versions: [{ noteId: 'n', seq: 'one', at: 1, sourceRev: 0, text: 't' }],
+  };
+  let code;
+  await store.importAll(new File([JSON.stringify(payload)], 'bad.json'), { mode: 'copy' }).catch((e) => { code = e.code; });
+  assertEquals(code, 'invalid-import');
+  await store.close();
+});
+
+test('a note whose title is not a string does not hang search (defensive guard)', async () => {
+  await store.open({ dbName: `heldnote-test-${Date.now()}` });
+  const note = await store.createNote();
+  const rev = store.saveDraft(note.id, 'searchable body');
+  await store.flush(note.id, rev);
+
+  // listNotes must survive any record shape it is handed, not only the ones
+  // parseImportFile lets through — so the search path is asserted to complete
+  // rather than hang, with a bounded wait proving it.
+  const results = await withTimeout(store.listNotes({ query: 'searchable' }), 2000, 'listNotes hung on search');
+  assertEquals(results.length, 1);
+
+  await store.close();
+});
+
+// --- backup carries the meta (settings) store -------------------------------
+
+test('exportAll includes a meta array, and importAll round-trips meta entries back', async () => {
+  await store.open({ dbName: `heldnote-test-${Date.now()}` });
+
+  const empty = JSON.parse(await (await store.exportAll()).text());
+  assert(Array.isArray(empty.meta), 'export payload must always carry a meta array');
+
+  const payload = {
+    schemaVersion: 1,
+    notes: [{ id: 'n', title: 'n', text: 'n', createdAt: 1, updatedAt: 1, pinned: false, deletedAt: null, localRev: 0 }],
+    versions: [],
+    meta: [{ key: 'theme', value: 'dark' }, { key: 'language', value: 'tr' }],
+  };
+  await store.importAll(new File([JSON.stringify(payload)], 'backup.json'), { mode: 'replace' });
+
+  const reExported = JSON.parse(await (await store.exportAll()).text());
+  const byKey = Object.fromEntries(reExported.meta.map((m) => [m.key, m.value]));
+  assertEquals(byKey.theme, 'dark', 'imported settings must survive into the next export');
+  assertEquals(byKey.language, 'tr');
+
+  await store.close();
+});
+
+test('a backup file with no meta key at all still imports (older backups stay readable)', async () => {
+  await store.open({ dbName: `heldnote-test-${Date.now()}` });
+  const payload = {
+    schemaVersion: 1,
+    notes: [{ id: 'n', title: 'n', text: 'n', createdAt: 1, updatedAt: 1, pinned: false, deletedAt: null, localRev: 0 }],
+    versions: [],
+  };
+  const result = await store.importAll(new File([JSON.stringify(payload)], 'old.json'), { mode: 'replace' });
+  assertEquals(result.notesAdded, 1);
   await store.close();
 });
 
