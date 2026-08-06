@@ -218,7 +218,7 @@ const draftQueues = new Map(); // noteId -> { pendingText, pendingRev, inFlight,
 function queueFor(noteId) {
   let q = draftQueues.get(noteId);
   if (!q) {
-    q = { pendingText: null, pendingRev: null, inFlight: false, waiters: [], lastFailure: null };
+    q = { pendingText: null, pendingRev: null, inFlight: false, restoring: false, waiters: [], lastFailure: null };
     draftQueues.set(noteId, q);
   }
   return q;
@@ -237,7 +237,10 @@ export function saveDraft(id, text) {
 
   emit({ type: 'saving', noteId: id, requestedRev: nextRev });
 
-  if (!q.inFlight) {
+  // While a restore holds the lock, the payload is only queued: restoreVersion
+  // starts the write itself once its own transaction has committed, so this
+  // text lands on top of the restored text instead of racing it.
+  if (!q.inFlight && !q.restoring) {
     runDraftWrite(id);
   }
 
@@ -419,14 +422,26 @@ export async function getVersion(id, seq) {
 // --- restore: fenced, and never destructive --------------------------------
 //
 // Restoring is an edit, not a rewind: it adds versions and never removes one.
-// Two hazards are handled here. Text that was drafted but never versioned would
-// be overwritten by the restore, so it is first snapshotted as a pre-restore
-// checkpoint version. And a draft write that is already in flight would land
-// after the restore and silently undo it, so each restore bumps a per-note
-// generation counter that runDraftWrite() checks before it opens its
-// transaction. The bump happens strictly before the restore's own transaction
-// is created, so a write that passes the check has already opened its
-// transaction and therefore commits ahead of the restore.
+// Three hazards are handled here.
+//
+// 1. Text that was drafted but never versioned would be overwritten, so it is
+//    snapshotted as a pre-restore checkpoint version first.
+// 2. A draft write already in flight when the restore starts would land after
+//    it. Every such write has necessarily created its transaction before the
+//    restore's, so IndexedDB commits it first and the restore wins on disk —
+//    and because the restore reads the draft after flushing, that write's text
+//    is what the checkpoint captures. Nothing is lost either way.
+// 3. Text typed *during* the restore would otherwise start its own transaction
+//    mid-restore, commit before the restore's transaction, and be silently
+//    clobbered by it — after having been reported as saved. The `restoring`
+//    lock closes that window: saveDraft keeps accepting and coalescing text but
+//    does not start a write while the lock is held, and the finally block below
+//    runs whatever accumulated once the restore is durable, so the edit becomes
+//    the next revision on top of the restored text instead of racing it.
+//
+// The generation counter is kept as a second line of defence for a write that
+// somehow reaches runDraftWrite across a restore boundary; note that with the
+// current dequeue-then-check ordering it is not expected to fire (see report).
 
 const noteGeneration = new Map(); // noteId -> generation counter, bumped by each restore
 
@@ -442,11 +457,41 @@ export async function restoreVersion(id, seq) {
     await flush(id, currentRev).catch(() => {});
   }
 
-  noteGeneration.set(id, currentGeneration(id) + 1);
   const q = queueFor(id);
-  q.pendingText = null;
-  q.pendingRev = null;
+  // Held from here until this restore is durable. Everything after this point
+  // runs inside try/finally: leaving the lock set would wedge the note's queue
+  // permanently, so a failed restore must still release it.
+  q.restoring = true;
+  noteGeneration.set(id, currentGeneration(id) + 1);
 
+  try {
+    if (q.pendingText !== null) {
+      // Queued before the lock and never started. The restore supersedes it, so
+      // its waiters are settled here rather than left for a write that will
+      // never run — flush() only ever settles through a completed write.
+      const supersededRev = q.pendingRev;
+      q.pendingText = null;
+      q.pendingRev = null;
+      const error = Object.assign(new Error('queued write superseded by a restore'), { code: 'stale-generation' });
+      const receipt = { noteId: id, requestedRev: supersededRev, durableRev: durableRevs.get(id) || 0, completedAt: Date.now(), error };
+      emit({ type: 'save-failed', ...receipt });
+      resolveWaiters(id, receipt);
+    }
+
+    return await runRestore(id, target, currentRev);
+  } finally {
+    q.restoring = false;
+    // Text typed while the lock was held was queued but never started; run it
+    // now, as the next revision on top of the restored text. Fire and forget,
+    // exactly as saveDraft does. If a write is somehow still in flight, its own
+    // loop will pick the payload up, so starting a second one would be wrong.
+    if (q.pendingText !== null && !q.inFlight) {
+      runDraftWrite(id);
+    }
+  }
+}
+
+async function runRestore(id, target, currentRev) {
   const draftTx = openTransaction(conn, ['drafts'], 'readonly');
   const currentDraft = await requestToPromise(draftTx.objectStore('drafts').get(id));
 
