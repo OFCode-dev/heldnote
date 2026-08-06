@@ -66,11 +66,12 @@ synchronisation will later need, but no synchronisation code ships in v1.
   - Description: Every keystroke is persisted, without the user performing any save action.
   - Priority: Must
   - Acceptance Criteria:
-    - Text is written to storage no later than 300 ms after the last keystroke
-    - While typing continues without any pause, text is still written at least once per second, so that a fast typist is never left unprotected by a debounce that keeps resetting
-    - Switching away from the tab or closing it forces an immediate write before the page unloads
+    - No accepted revision waits more than 300 ms from the input event to transaction completion, whether or not the user pauses
+    - Durability is measured to the transaction's completion, not to the individual write request resolving
+    - Writes are serialized and coalescing: one transaction in flight per note, the queued payload always replaced by the latest text
+    - Switching away from the tab or closing it flushes immediately, but lifecycle events are opportunistic rather than the guarantee — a tab can be discarded with no event at all
     - No save button exists anywhere in the interface
-    - The draft write path performs no computation beyond storing the text
+    - The draft path performs no diffing, history reconstruction, or expensive transformation; deriving the title and updating metadata happen in the same transaction
 
 - Recovery after an abrupt ending
   - Description: After a refresh, a crash, or a machine restart, the note reopens with its text intact.
@@ -104,8 +105,10 @@ synchronisation will later need, but no synchronisation code ships in v1.
   - Priority: Must
   - Acceptance Criteria:
     - The newest 50 versions of a note are all retained
-    - Beyond those, at most one version per day is kept
-    - A note retains at most 200 versions; beyond that the oldest daily versions are dropped first
+    - Every version from the last 24 hours is retained, regardless of count
+    - Beyond both protections, at most one version per UTC day is kept, ties broken by `seq`
+    - Storage is bounded by a byte budget rather than a record count; record counts do not bound bytes when note size is unbounded
+    - If the protected recent set alone exceeds its budget, history pauses with a warning; protected recovery points are never silently deleted
     - The newest version of a note is never pruned
 
 - Trash and undo
@@ -114,8 +117,9 @@ synchronisation will later need, but no synchronisation code ships in v1.
   - Acceptance Criteria:
     - Deleting removes the note from the main list and places it in the trash, keeping its version history
     - An undo affordance appears immediately after deletion and restores the note fully
-    - Notes in the trash are purged permanently 30 days after deletion
-    - The trash is viewable, and a note can be restored from it at any time before purge
+    - Notes stay in the trash indefinitely; there is no automatic purge on any timer
+    - Emptying the trash happens only when the user asks and confirms
+    - The trash is viewable, and a note can be restored from it at any time
 
 - Search across notes
   - Description: The user can find a note by its content or title.
@@ -146,9 +150,10 @@ synchronisation will later need, but no synchronisation code ships in v1.
   - Priority: Must
   - Acceptance Criteria:
     - Export produces a single JSON file containing every note, its version history, trashed notes, and settings
-    - Import restores from such a file, and the user chooses between merging with existing notes and replacing them
+    - Import offers two modes: replace everything transactionally, or import as copies with fresh note IDs
+    - There is no semantic merge in v1; with versions keyed by `[noteId, seq]`, divergent branches collide on the same key and one text would have to be discarded
     - The file carries its own schema version, and a file whose version is not understood is refused rather than guessed at
-    - On merge, a note present in both wins by the newer `updatedAt`, version histories are combined, and nothing is discarded silently
+    - Export streams rather than materializing the whole database in memory once it passes a size threshold
     - Importing a file that is not valid JSON, or lacks the expected shape, fails with a message and changes nothing
     - An export followed by a wipe and an import returns the app to its previous state
 
@@ -166,19 +171,19 @@ synchronisation will later need, but no synchronisation code ships in v1.
   - Description: Running out of space degrades in a defined order rather than failing silently.
   - Priority: Must
   - Acceptance Criteria:
-    - A failed write due to quota triggers pruning of the oldest versions, then one retry
-    - If space is still unavailable, version commits stop while draft writes continue
-    - The user is told that history is no longer being kept, and export is offered
-    - Draft writes are the last thing to be sacrificed
+    - The failing operation is identified first, because the failure may be the draft write itself, in which case stopping version commits frees nothing after the retry has already failed
+    - A failed version write triggers pruning of the oldest versions, then one retry; if it still fails, version commits stop and the user is told history is no longer being kept
+    - A draft write that still fails after pruning and retry puts the app into an explicit "Not saved — memory only" state: the visible buffer is kept, emergency export includes it, and ordinary saved events stop
+    - A tested maximum note size and per-note and global history byte budgets exist; `estimate()` is advisory only and the real guarantee is that a transaction commits fully or aborts without change
 
 - Multi-tab guard
   - Description: The same note open twice cannot silently lose one tab's work.
   - Priority: Must
   - Acceptance Criteria:
-    - Opening a note already open in another tab opens it read-only with an explanation
-    - The user can override and edit anyway from that message
-    - Closing the first tab releases the note for editing in the second
-    - A lock whose holder has stopped announcing itself expires and is reclaimed, so a crashed tab cannot leave a note read-only
+    - Editing a note requires holding the Web Lock named for it; a tab that cannot acquire it opens the note read-only and says which tab holds it
+    - Maintenance, import, and purge hold a single global lock, because they touch every store
+    - There is no time-based expiry and no unconditional override; a handoff completes only when the holder flushes, goes read-only, releases, and the other tab actually acquires
+    - A crashed tab releases its lock automatically, because the browser context does it
     - Two tabs editing different notes are unaffected
 
 - Editor features carried over
@@ -213,15 +218,19 @@ synchronisation will later need, but no synchronisation code ships in v1.
   - Priority: Must
 
 - History storage footprint
-  - Target: A note edited daily for a year stays under roughly 5 MB of history after pruning
-  - Priority: Should
+  - Target: Per-note and global history byte budgets, enforced by pruning. A byte budget rather than a note-size-independent figure, since unbounded note size makes any fixed total meaningless
+  - Priority: Must
 
 - No dependencies, no build
   - Target: The app runs from static files opened directly; zero runtime dependencies and zero build steps
   - Priority: Must
 
 - Browser support
-  - Target: Current Chrome, Firefox, Edge, and Safari, on desktop and mobile browsers
+  - Target: Current Chrome, Firefox, and Edge as durable. Safari is supported but declared non-durable in ordinary tabs, and session-only in Private Browsing; the "never lost" guarantee does not extend there
+  - Priority: Must
+
+- Dedicated immutable origin
+  - Target: The app is published on an origin serving nothing else, fixed before the first real note is written, since IndexedDB is scoped by origin and every repository under a shared `owner.github.io` host can read and delete this database
   - Priority: Must
 
 - Accessibility
@@ -253,8 +262,8 @@ synchronisation will later need, but no synchronisation code ships in v1.
     2. Its draft text is read back and displayed
   - Success End State: The text is as it was, minus at most the last moment of typing
   - Failure States:
-    - The database will not open, and the user is offered export of whatever is readable
-    - The browser evicted the data, and the app says so rather than presenting an empty note as normal
+    - The database will not open, and the outcome is distinguished: `VersionError` (reload for newer app files), `blocked` (another connection must close), unavailable (in-memory session), or corruption (only in-memory buffers can be exported)
+    - The database is empty, and the app says it found no local data without claiming to know whether this is first use, cleared data, private browsing, or eviction — those are locally indistinguishable
 
 - Return to an earlier version
   - Trigger: The user opens the history panel for a note
@@ -293,13 +302,14 @@ synchronisation will later need, but no synchronisation code ships in v1.
 - A deleted note can be brought back
 - Exporting, clearing storage, and importing returns the app to its exact prior state
 - With storage unavailable, the app never once displays a saved state
+- The interface never merges "this revision is durable" with "the browser will keep it"; a user on ordinary Safari can see that the second is not promised
 - The user stops keeping a second copy of quick notes elsewhere, because this one is trusted
 
 ## Assumptions
-- Pruning thresholds (all versions for an hour, hourly for a day, daily for 30 days, weekly beyond, capped at 200 per note) are a starting point chosen without usage data, and are expected to be tuned. Recorded as an open question.
-- Trash retention of 30 days is assumed rather than established. Recorded as an open question.
-- Notes are text of ordinary size; no upper bound is enforced in v1, and very large notes are accepted as the worst case for snapshot history. Recorded as an open question.
+- Pruning protections (newest 50, everything from the last 24 hours, one per UTC day beyond, bounded by a byte budget) are a starting point chosen without usage data and expected to be tuned. Recorded as an open question.
+- The maximum note size and the byte budgets are to be set from measurement, not intuition. Recorded as an open question.
 - A timestamp list is assumed sufficient for finding a version; searching across versions is not in v1. Recorded as an open question.
-- IndexedDB is available and grants enough quota in the browsers being targeted, absent private-browsing or hardened privacy settings.
-- One user per browser profile; no account, no identity, and no access control in v1.
+- The 300 ms window is a design target to be validated against real write latency on a realistic database, and it cannot hold against physical power loss — it is a guarantee about what the app commits, not about hardware.
+- IndexedDB is available and grants enough quota in the browsers being targeted, absent private browsing or hardened privacy settings.
+- One user per browser profile; no account, no identity, and no access control in v1. A shared machine exposes every note to whoever opens the page.
 - The user is willing to export occasionally as a backup habit while sync does not exist.

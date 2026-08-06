@@ -24,14 +24,26 @@ and paginate any list that can grow without bound.
 ## Types
 
 ```js
-StoreStatus  { available, persistent, schemaVersion, reason? }
-NoteSummary  { id, title, updatedAt, pinned, deletedAt }
-Note         { id, title, text, createdAt, updatedAt, pinned, deletedAt, rev }
-VersionInfo  { seq, at, size }          // no text — listings stay cheap
-Version      { seq, at, text }
-ImportResult { notesAdded, notesUpdated, versionsAdded, skipped }
+StoreStatus  { available, retention, schemaVersion, reason? }
+             // retention: 'persistent' | 'best-effort' | 'session-only' | 'unknown'
+NoteSummary  { id, title, updatedAt, pinned, deletedAt }   // deletedAt: number | null
+Note         { id, title, text, createdAt, updatedAt, pinned, deletedAt, localRev }
+VersionInfo  { seq, at, sourceRev, size }   // no text — listings stay cheap
+Version      { seq, at, sourceRev, text }
+SaveReceipt  { noteId, requestedRev, durableRev, completedAt, error? }
+ImportResult { notesAdded, notesCopied, versionsAdded, skipped }
 StoreError   { code, message, cause? }
 ```
+
+`retention` replaces a boolean `persistent` because durability of the latest
+revision and retention by the browser are different claims, and a single flag
+invites the interface to merge them into one green light. Ordinary Safari reports
+`best-effort` at most; Private Browsing reports `session-only` even though a write
+probe there succeeds.
+
+The stored shape uses indexable fields — `isDeleted`, `pinKey`, and no `deletedAt`
+key at all while live — because booleans and null are not valid IndexedDB keys.
+Normalizing them back into the domain values above is this boundary's job.
 
 `StoreError.code` is one of: `storage-unavailable`, `quota-exceeded`,
 `version-mismatch`, `invalid-import`, `not-found`, `locked-by-other-tab`.
@@ -72,18 +84,29 @@ filter it.
 ## The two persistence layers
 
 ```js
-saveDraft(id, text) -> void          // returns immediately; never throws
-flush()             -> Promise<void> // forces any pending write to complete
+saveDraft(id, text)          -> number          // returns the assigned localRev
+flush(noteId, throughRev)    -> Promise<SaveReceipt>
 ```
 
-`saveDraft` is called on every keystroke. Debouncing lives inside the store, not
-in the caller, so the 300 ms guarantee holds no matter who calls it or how often.
-It is deliberately synchronous-looking and non-throwing: the path that must never
-fail cannot be one that callers might forget to `await` or to catch. Failures
-surface through the event stream instead.
+`saveDraft` is called on every keystroke, returns immediately, and never throws:
+the path that must never fail cannot be one a caller might forget to `await` or to
+catch. Failures surface through the event stream. It returns the revision it
+assigned, which is what lets the interface tell "the text on screen is durable"
+apart from "some earlier text is durable".
 
-`flush` exists for `pagehide` and `visibilitychange`, where there is no time for
-a debounce to elapse.
+Scheduling lives inside the store: writes are serialized and coalescing, one
+transaction in flight per note, the queued payload always replaced by the latest
+text, and no accepted revision waiting more than 300 ms measured to transaction
+completion. Not `put()` success — a transaction can still fail after an individual
+request resolves.
+
+`flush` resolves only when the given revision's transaction has completed, and
+rejects if it failed. It is used on `pagehide` and `visibilitychange`, and before
+any fenced operation.
+
+Current-text transactions request `durability: "strict"`. Version commits do the
+same. Whether the 300 ms draft cadence can afford strict durability on every write
+is a measurement, not an assumption, and the default may be revisited with numbers.
 
 ```js
 commitVersion(id) -> Promise<VersionInfo | null>
@@ -100,14 +123,20 @@ getVersion(id, seq)                 -> Promise<Version>
 restoreVersion(id, seq)             -> Promise<VersionInfo>
 ```
 
-`listVersions` pages backwards through time with a `before` timestamp cursor, and
-returns no text. A note can hold up to 200 versions of arbitrary size; loading all
-of them to render a list of timestamps would be the one place this app could
-plausibly stall.
+`listVersions` pages backwards with a `[at, seq]` tuple cursor, not a bare
+timestamp: two versions can share a millisecond, and a timestamp-only cursor skips
+records between pages. It returns no text.
 
-`restoreVersion` writes the old text as the note's current text *and* commits it
-as a new version, so restoring is undoable by restoring the version before it. No
-version is ever removed by a restore.
+`restoreVersion` is one fenced operation, not a write followed by a commit. It
+flushes the current revision, invalidates older queued writes, and then in a single
+transaction: reads the current draft, inserts it as a pre-restore checkpoint if it
+differs from the newest snapshot, writes the restored text as a new draft revision,
+inserts it as a new version, and updates metadata.
+
+The checkpoint is the point. Without it, restoring while the current text has been
+saved as a draft but not yet versioned destroys that text permanently — and the
+ordinary duplicate check would then suppress the commit that was supposed to make
+the restore undoable. No version is ever removed by a restore.
 
 ## Maintenance
 
@@ -123,14 +152,24 @@ note's newest version.
 ## Backup
 
 ```js
-exportAll()               -> Promise<Blob>
-importAll(file, { mode }) -> Promise<ImportResult>   // mode: 'merge' | 'replace'
+exportAll()               -> Promise<Blob | ReadableStream>
+importAll(file, { mode }) -> Promise<ImportResult>   // mode: 'replace' | 'copy'
 ```
+
+`exportAll` streams once the total exceeds a size threshold rather than
+materializing everything in memory — hanging the tab during the one operation a
+worried user reaches for would be a poor way to keep this product's promise.
 
 `importAll` validates the file's `schemaVersion` and shape before touching
 anything, and rejects with `invalid-import` on failure without a partial write.
-`replace` runs as one transaction, so an interrupted import cannot leave the
-database half-emptied.
+`replace` runs as one transaction. `copy` assigns fresh note IDs and keeps every
+incoming draft and version.
+
+There is no `merge`. With versions keyed `[noteId, seq]`, two profiles importing
+one backup both produce `seq` 11 with different text, and one record can hold only
+one of them — so a merge cannot honour "nothing is discarded silently" without
+globally unique version identity and branch-aware conflict handling. That is sync
+work and ships with sync.
 
 ## Events
 
@@ -139,9 +178,17 @@ subscribe(handler) -> unsubscribe
 ```
 
 Handler receives `{ type, ... }` where `type` is one of `saved`, `saving`,
-`save-failed`, `note-changed`, `storage-unavailable`, `quota-warning`,
-`lock-changed`. This is how the status bar learns what to display, and how the
-draft path reports trouble without being able to throw at its caller.
+`save-failed`, `note-changed`, `storage-unavailable`, `retention-changed`,
+`quota-warning`, `memory-only`, `lock-changed`. This is how the status bar learns
+what to display, and how the draft path reports trouble without being able to
+throw at its caller.
+
+Every save event carries a `SaveReceipt`. Without the revision, an event stream
+lies in both directions: revision 10's completion renders "Saved" beside revision
+11's visible text, and a failure for an older request arriving after a newer
+success leaves the interface stuck in a failed state. The status is saved only
+when `editorRev === durableRev`, and retention is displayed as its own separate
+fact.
 
 ## What is deliberately absent
 

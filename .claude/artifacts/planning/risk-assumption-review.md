@@ -26,7 +26,7 @@
   - Category: Technical
   - Likelihood: High
   - Impact: High
-  - Mitigation: Request persistent storage, which exempts the origin from the cap when granted; verify empirically on Safari before claiming support; if persistence is not granted, say so in the interface rather than promising durability the browser will not honour
+  - Mitigation: **Corrected 2026-08-06.** The original mitigation here was wrong: `persist()` is not understood to grant an exemption from WebKit's seven-day cap, and the documented exemption is an installed Home Screen or Dock web app whose storage is separate from ordinary Safari's. Private Browsing is a further trap — a real write probe succeeds there while the storage is an ephemeral per-tab session. The decision taken is to declare ordinary Safari non-durable, keep calling `persist()` as one input to a reported retention state, and never treat a successful write probe as proof of durability
   - Owner: Developer
 
 - A debounce that resets on every keystroke may never fire while typing continues

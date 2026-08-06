@@ -22,25 +22,40 @@ data:
       Database `quick-keep`, version 1, created in a single `onupgradeneeded`:
 
       notes     keyPath id
-                { id, title, createdAt, updatedAt, deletedAt, pinned, rev }
-                index by_updatedAt   on updatedAt
-                index by_deletedAt   on deletedAt   (drives the trash view and purge)
-                index by_pinned      on pinned
+                { id, title, createdAt, updatedAt, localRev,
+                  pinned, pinKey: 0|1, isDeleted: 0|1, deletedAt? }
+                index by_list   on [isDeleted, pinKey, updatedAt]
+                index by_trash  on [isDeleted, deletedAt]
 
       drafts    keyPath noteId
-                { noteId, text, savedAt }
+                { noteId, text, localRev, savedAt, byteLength }
                 no index; always fetched by primary key
 
       versions  keyPath [noteId, seq]
-                { noteId, seq, text, at }
-                index by_note_at     on [noteId, at]  (history listing and pruning)
+                { noteId, seq, at, sourceRev, text, byteLength }
+                index by_note_at on [noteId, at, seq]  (history listing and pruning)
 
       meta      keyPath key
                 { key, value }
                 holds theme, zoom, language, lastOpenedNoteId, schemaVersion, appVersion
 
-      All timestamps are epoch milliseconds. `deletedAt` is null for live notes.
-      `seq` is a per-note monotonic counter, never reused after pruning.
+      All timestamps are epoch milliseconds. `seq` is a per-note monotonic counter,
+      never reused after pruning.
+
+      CRITICAL — only indexable values may be indexed. IndexedDB keys must be
+      numbers, strings, dates, binary values, or arrays of those. Booleans and null
+      are NOT valid keys, and a record whose indexed value is invalid is written to
+      the store but silently omitted from the index. An earlier revision of this
+      schema indexed a boolean `pinned` and a `deletedAt` that was null while live;
+      it would have produced an empty note list while every note sat intact in the
+      database. Hence `isDeleted`/`pinKey` as 0|1, and `deletedAt` omitted entirely
+      while a note is live. `store.js` normalizes these back to `pinned: boolean`
+      and `deletedAt: number | null` at the boundary.
+
+      `at` alone is not a unique pagination cursor, so the history index is
+      [noteId, at, seq]. `byteLength` is stored because bytes, not record counts,
+      are what bound storage, and because VersionInfo.size cannot be derived
+      cheaply at listing time.
     breaking_changes: none — nothing exists before this
 
   down_migration:
@@ -76,17 +91,31 @@ data:
       Without this, a future format change silently corrupts imports.
     - `meta.schemaVersion` is written alongside the browser's own database version so
       that a mismatch is diagnosable after the fact.
-    - Pruning and trash purge both delete user data on a timer, so both are treated as
-      restartable maintenance jobs: they run at startup, operate note by note, commit
-      per note, and are safe to interrupt by a closed tab and safe to re-run. Neither
-      ever removes the newest version of a note.
+    - Pruning is a restartable maintenance job: it runs at startup under the global
+      lock, operates note by note, commits per note, and is safe to interrupt and to
+      re-run. It never removes the newest version, anything from the last 24 hours,
+      or anything inside the newest-50 window.
+    - There is no automatic trash purge. A timed background deletion of the only
+      remaining copy is the wrong default for this product, and a forward clock jump
+      could trigger it early. Trash is emptied only on explicit user confirmation.
     - Import with the replace option deletes every store's contents before writing.
       It runs inside one transaction so an interrupted import cannot leave a half-
       replaced database, and it is refused outright if the incoming file fails
       validation.
     - The draft and version layers hold the same text at the same moment by design.
-      Reads always prefer the draft, which is the newest by construction; versions are
-      only ever read deliberately through the history panel.
+      The draft is authoritative on open. Ordering is decided by `localRev`, never by
+      timestamp: a timestamp can be stamped at enqueue time while the write completes
+      much later, under which a version committed in between would wrongly appear
+      newer and hide a successfully stored draft. A version whose `sourceRev` exceeds
+      the draft's revision is an invariant violation, surfaced as a recovery choice
+      rather than silently selected.
+    - Every open outcome is distinct and handled separately: VersionError (page older
+      than stored data), blocked (another connection must close, via versionchange),
+      unavailable or SecurityError (explicit in-memory session store), corruption
+      (preserve and export in-memory buffers only — drafts live inside the database
+      that will not open, so they cannot be a recovery source), and an empty database
+      (first use, cleared data, private browsing, and eviction are locally
+      indistinguishable, and the message must not claim to know which).
 ```
 
 ## Findings that change the design

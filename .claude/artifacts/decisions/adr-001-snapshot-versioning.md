@@ -63,7 +63,15 @@ maintain, for a saving that only matters at a scale this application does not re
 **Accepted:** History consumes more storage than a diff log would, and the pruning
 policy is load-bearing rather than optional — without it, history grows unbounded.
 Pruning deletes user data on a timer, so it must be restartable and must never
-remove a note's newest version.
+remove a note's newest version, anything from the last 24 hours, or anything in the
+newest-50 window.
+
+The 50 KB × 200 ≈ 10 MB figure above is an illustration of one note, not a bound.
+Snapshot cost scales with note size, so the real bound is a byte budget plus a
+tested maximum note size — a record count bounds nothing while note size is
+unbounded. Revised 2026-08-06 after external review, which correctly noted that the
+old 5 MB history target, the unlimited note size, and this example could not all be
+true at once.
 
 **Gained:** Restore is a single read. There is no diff module, no integrity chain,
 and no replay path to test. The failure modes that remain are storage failures,
