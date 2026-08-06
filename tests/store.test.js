@@ -512,3 +512,35 @@ test('persist() is requested only after the first version commit, not before', a
   navigator.storage.persist = originalPersist;
   await store.close();
 });
+
+// --- Task 15: i18n.js -------------------------------------------------------
+
+import { t, setLanguage, getLanguage, detectLanguage } from '../i18n.js';
+
+test('i18n: exact brand copy for saving/retention states, and language switching', () => {
+  setLanguage('en');
+  assertEquals(t('status.saving'), 'Saving…');
+  assertEquals(t('status.notSaved'), 'Not saved — memory only');
+  assertEquals(t('status.recovered'), 'Unsaved draft recovered');
+  assertEquals(t('retention.label'), 'Browser retention');
+  assertEquals(t('retention.persistent'), 'Persistent');
+  assertEquals(t('retention.bestEffort'), 'Best effort');
+  assertEquals(t('retention.sessionOnly'), 'Session only');
+  assertEquals(t('trash.move'), 'Move to trash');
+  assertEquals(t('trash.deletePermanently'), 'Delete permanently');
+  assertEquals(t('history.title'), 'Version history');
+  assertEquals(t('history.restoreConfirm'), 'Restore this version? The current text will remain available as an earlier version.');
+
+  setLanguage('tr');
+  assert(getLanguage() === 'tr');
+  assert(t('status.saving') !== 'Saving…', 'expected a Turkish translation, not the English fallback');
+});
+
+test('i18n: detectLanguage defaults to English for anything that is not Turkish', () => {
+  const original = Object.getOwnPropertyDescriptor(navigator, 'language');
+  Object.defineProperty(navigator, 'language', { value: 'fr-FR', configurable: true });
+  assertEquals(detectLanguage(), 'en');
+  Object.defineProperty(navigator, 'language', { value: 'tr-TR', configurable: true });
+  assertEquals(detectLanguage(), 'tr');
+  if (original) Object.defineProperty(navigator, 'language', original);
+});
