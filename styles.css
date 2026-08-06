@@ -1,0 +1,84 @@
+/* styles.css — tokens from brand-brief.md §4, §5, §7 */
+:root {
+  color-scheme: light dark;
+  --ink-950: #0E1116;
+  --ink-900: #171B22;
+  --ink-800: #202630;
+  --paper-100: #F2F0E8;
+  --mist-400: #9CA6B4;
+  --stone-300: #D7D4CC;
+  --paper-50: #F6F4EE;
+  --graphite-900: #20242A;
+  --sage-500: #78A98D;
+  --blue-500: #7295BA;
+  --cyan-500: #73B8C8;
+  --amber-500: #D4A65A;
+  --coral-500: #D87970;
+
+  --bg: var(--ink-950);
+  --panel-bg: var(--ink-900);
+  --elevated-bg: var(--ink-800);
+  --text: var(--paper-100);
+  --text-secondary: var(--mist-400);
+  --border: var(--ink-800);
+
+  --radius-control: 6px;
+  --radius-panel: 8px;
+  --radius-dialog: 10px;
+  --motion-control: 150ms;
+  --motion-panel: 210ms;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: var(--paper-50);
+    --panel-bg: var(--paper-50);
+    --elevated-bg: #ffffff;
+    --text: var(--graphite-900);
+    --text-secondary: #66707D;
+    --border: var(--stone-300);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root { --motion-control: 0ms; --motion-panel: 0ms; }
+}
+
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+
+#app {
+  display: grid;
+  grid-template-columns: 240px 1fr 280px;
+  grid-template-rows: 1fr auto;
+  height: 100vh;
+}
+#notes-panel { grid-column: 1; grid-row: 1; overflow-y: auto; background: var(--panel-bg); border-right: 1px solid var(--border); border-radius: 0 var(--radius-panel) var(--radius-panel) 0; }
+#editor-panel { grid-column: 2; grid-row: 1; display: flex; flex-direction: column; }
+#history-panel { grid-column: 3; grid-row: 1; overflow-y: auto; background: var(--panel-bg); border-left: 1px solid var(--border); border-radius: var(--radius-panel) 0 0 var(--radius-panel); transition: opacity var(--motion-panel) ease; }
+#history-panel[hidden] { display: none; }
+#status-bar { grid-column: 1 / -1; grid-row: 2; display: flex; gap: 1rem; padding: 0.25rem 0.75rem; font-size: 13px; font-weight: 500; border-top: 1px solid var(--border); }
+#status-revision.state-saved { color: var(--sage-500); }
+#status-revision.state-failed { color: var(--coral-500); }
+#status-retention.state-warning { color: var(--amber-500); }
+#status-retention.state-info { color: var(--blue-500); }
+
+button {
+  border-radius: var(--radius-control);
+  border: 1px solid var(--border);
+  background: var(--elevated-bg);
+  color: var(--text);
+  transition: background var(--motion-control) ease;
+}
+button:focus-visible, textarea:focus-visible { outline: 2px solid var(--cyan-500); outline-offset: 2px; }
+
+textarea#editor {
+  flex: 1;
+  font-family: ui-monospace, SFMono-Regular, Consolas, 'Liberation Mono', monospace;
+  font-size: 17px;
+  background: var(--bg);
+  color: var(--text);
+  border: none;
+  resize: none;
+  padding: 1rem;
+}
