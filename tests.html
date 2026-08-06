@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Heldnote — tests</title>
+</head>
+<body>
+  <h1>Heldnote test runner</h1>
+  <div id="results">Running…</div>
+  <script type="module">
+    import { runTests } from './tests/test-harness.js';
+    import './tests/db.test.js';
+    import './tests/store.test.js';
+    runTests();
+  </script>
+</body>
+</html>
