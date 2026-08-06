@@ -60,6 +60,7 @@ export async function close() {
   draftQueues.clear();
   revCounters.clear();
   durableRevs.clear();
+  lastVersionText.clear();
 }
 
 function newId() {
@@ -324,4 +325,85 @@ async function runDraftWrite(noteId) {
   }
 
   q.inFlight = false;
+}
+
+// --- version layer: snapshot the current draft into an immutable history ---
+//
+// commitVersion() flushes the draft to durability first (so sourceRev always
+// names a durable revision), then snapshots the draft's current text into the
+// versions store, deduping against the last-committed text so unchanged notes
+// don't accumulate no-op versions. lastVersionText is connection-scoped (like
+// revCounters/durableRevs) and is cleared in close().
+
+const lastVersionText = new Map(); // noteId -> text of the newest committed version, for dedup
+
+export async function commitVersion(id) {
+  const currentRev = revCounters.get(id) || 0;
+  if (currentRev > 0) {
+    await flush(id, currentRev).catch(() => {});
+  }
+  const draftTx = openTransaction(conn, ['drafts'], 'readonly');
+  const draft = await requestToPromise(draftTx.objectStore('drafts').get(id));
+
+  const previousText = lastVersionText.get(id);
+  if (previousText === draft.text) {
+    return null;
+  }
+
+  const seq = await nextSeq(id);
+  const at = Date.now();
+  const byteLength = new TextEncoder().encode(draft.text).length;
+
+  const writeTx = openTransaction(conn, ['versions'], 'readwrite', { durability: 'strict' });
+  writeTx.objectStore('versions').put({ noteId: id, seq, at, sourceRev: draft.localRev, text: draft.text, byteLength });
+  await awaitTransactionComplete(writeTx);
+
+  lastVersionText.set(id, draft.text);
+  return { seq, at, sourceRev: draft.localRev, size: byteLength };
+}
+
+async function nextSeq(noteId) {
+  const tx = openTransaction(conn, ['versions'], 'readonly');
+  const index = tx.objectStore('versions').index('by_note_at');
+  const range = IDBKeyRange.bound([noteId, -Infinity, -Infinity], [noteId, Infinity, Infinity]);
+  let maxSeq = 0;
+  await new Promise((resolve, reject) => {
+    const req = index.openCursor(range, 'prev');
+    req.onsuccess = () => {
+      const cursor = req.result;
+      if (cursor) { maxSeq = cursor.value.seq; }
+      resolve();
+    };
+    req.onerror = () => reject(req.error);
+  });
+  return maxSeq + 1;
+}
+
+export async function listVersions(id, { before, limit } = {}) {
+  const tx = openTransaction(conn, ['versions'], 'readonly');
+  const index = tx.objectStore('versions').index('by_note_at');
+  const upper = before ? [id, before.at, before.seq] : [id, Infinity, Infinity];
+  const range = IDBKeyRange.bound([id, -Infinity, -Infinity], upper, false, Boolean(before));
+  const results = [];
+
+  await new Promise((resolve, reject) => {
+    const req = index.openCursor(range, 'prev');
+    req.onsuccess = () => {
+      const cursor = req.result;
+      if (!cursor || (limit && results.length >= limit)) { resolve(); return; }
+      const { seq, at, sourceRev, byteLength } = cursor.value;
+      results.push({ seq, at, sourceRev, size: byteLength });
+      cursor.continue();
+    };
+    req.onerror = () => reject(req.error);
+  });
+
+  return results;
+}
+
+export async function getVersion(id, seq) {
+  const tx = openTransaction(conn, ['versions'], 'readonly');
+  const record = await requestToPromise(tx.objectStore('versions').get([id, seq]));
+  if (!record) throw Object.assign(new Error(`version ${id}/${seq} not found`), { code: 'not-found' });
+  return { seq: record.seq, at: record.at, sourceRev: record.sourceRev, text: record.text };
 }

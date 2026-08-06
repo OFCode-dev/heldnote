@@ -129,3 +129,41 @@ test('no accepted revision waits more than 300ms from input to transaction compl
 
   await store.close();
 });
+
+test('commitVersion snapshots current text and returns null when unchanged', async () => {
+  await store.open({ dbName: `heldnote-test-${Date.now()}` });
+  const note = await store.createNote();
+  const rev = store.saveDraft(note.id, 'v1 text');
+  await store.flush(note.id, rev);
+
+  const info = await store.commitVersion(note.id);
+  assert(info !== null, 'expected a VersionInfo for changed text');
+  assertEquals(info.seq, 1);
+  assertEquals(info.sourceRev, rev);
+
+  const again = await store.commitVersion(note.id);
+  assertEquals(again, null, 'expected null when text has not changed since the last version');
+
+  await store.close();
+});
+
+test('listVersions pages backwards newest-first without returning text', async () => {
+  await store.open({ dbName: `heldnote-test-${Date.now()}` });
+  const note = await store.createNote();
+
+  for (let i = 0; i < 3; i += 1) {
+    const rev = store.saveDraft(note.id, `text-${i}`);
+    await store.flush(note.id, rev);
+    await store.commitVersion(note.id);
+  }
+
+  const list = await store.listVersions(note.id, {});
+  assertEquals(list.length, 3);
+  assert(list[0].seq > list[1].seq && list[1].seq > list[2].seq, 'expected newest-first ordering');
+  assert(list.every((v) => v.text === undefined), 'VersionInfo must not carry text');
+
+  const full = await store.getVersion(note.id, list[2].seq);
+  assertEquals(full.text, 'text-0');
+
+  await store.close();
+});
