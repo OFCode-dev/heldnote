@@ -1,4 +1,5 @@
 import { openDb, openTransaction, awaitTransactionComplete, requestToPromise } from './db.js';
+import { LIMITS } from './constants.js';
 
 let conn = null;
 let listeners = new Set();
@@ -6,7 +7,13 @@ let memoryFallback = null;
 
 function emit(event) {
   for (const handler of listeners) {
-    handler(event);
+    // A faulty subscriber must not be able to break a save: emit() is on
+    // saveDraft's synchronous path, which is required never to throw.
+    try {
+      handler(event);
+    } catch (error) {
+      console.error('heldnote: event subscriber threw', error);
+    }
   }
 }
 
@@ -188,4 +195,123 @@ export async function purgeNote(id) {
   });
   await awaitTransactionComplete(tx);
   emit({ type: 'note-changed', noteId: id });
+}
+
+// --- draft layer: serialized, coalescing writer -----------------------------
+//
+// At most one draft transaction per note is in flight at any time. While one is
+// running, further keystrokes only replace the queued payload, so the writer
+// always persists the newest text and never a stale intermediate one. Because
+// an accepted revision is written on the very next turn (no debounce), the
+// wall-clock budget of LIMITS.DRAFT_FLUSH_MAX_MS covers the whole path from
+// saveDraft() to the transaction's `complete` event.
+
+const draftQueues = new Map(); // noteId -> { pendingText, pendingRev, inFlight, waiters, lastFailure }
+
+function queueFor(noteId) {
+  let q = draftQueues.get(noteId);
+  if (!q) {
+    q = { pendingText: null, pendingRev: null, inFlight: false, waiters: [], lastFailure: null };
+    draftQueues.set(noteId, q);
+  }
+  return q;
+}
+
+export function saveDraft(id, text) {
+  const nextRev = (revCounters.get(id) || 0) + 1;
+  revCounters.set(id, nextRev);
+
+  const q = queueFor(id);
+  q.pendingText = text;
+  q.pendingRev = nextRev;
+  // A newer payload is on its way, so an earlier failure no longer decides
+  // anything: the write about to run can still make this text durable.
+  q.lastFailure = null;
+
+  emit({ type: 'saving', noteId: id, requestedRev: nextRev });
+
+  if (!q.inFlight) {
+    runDraftWrite(id);
+  }
+
+  return nextRev;
+}
+
+function resolveWaiters(noteId, receipt) {
+  const q = queueFor(noteId);
+  q.lastFailure = receipt.error ? { rev: receipt.requestedRev, error: receipt.error } : null;
+  const remaining = [];
+  for (const waiter of q.waiters) {
+    if (receipt.durableRev >= waiter.rev) {
+      // The revision this caller asked about is durable, so the promise is
+      // kept even if some later revision in the same batch failed.
+      waiter.resolve(receipt);
+    } else if (receipt.error && receipt.requestedRev >= waiter.rev) {
+      // The write that failed already carried this waiter's text (coalescing
+      // means a newer payload supersedes the older one), so nothing still
+      // queued can make it durable. Reject rather than wait forever.
+      waiter.reject(receipt.error);
+    } else {
+      remaining.push(waiter);
+    }
+  }
+  q.waiters = remaining;
+}
+
+export function flush(noteId, throughRev) {
+  const q = queueFor(noteId);
+  const durableRev = durableRevs.get(noteId) || 0;
+  if (durableRev >= throughRev) {
+    // Already durable: no future transaction is left to wait on, and waiters
+    // are only ever settled by one completing.
+    return Promise.resolve({ noteId, requestedRev: throughRev, durableRev, completedAt: Date.now() });
+  }
+  if (q.lastFailure && q.lastFailure.rev >= throughRev) {
+    // The write carrying this revision already failed and no newer payload has
+    // been queued since, so waiting would never end.
+    return Promise.reject(q.lastFailure.error);
+  }
+  return new Promise((resolve, reject) => {
+    q.waiters.push({ rev: throughRev, resolve, reject });
+  });
+}
+
+async function runDraftWrite(noteId) {
+  const q = queueFor(noteId);
+  q.inFlight = true;
+
+  while (q.pendingText !== null) {
+    const text = q.pendingText;
+    const rev = q.pendingRev;
+    q.pendingText = null;
+    q.pendingRev = null;
+
+    const now = Date.now();
+    const byteLength = new TextEncoder().encode(text).length;
+    const title = deriveTitle(text);
+
+    let receipt;
+    try {
+      const tx = openTransaction(conn, ['notes', 'drafts'], 'readwrite', { durability: 'strict' });
+      tx.objectStore('drafts').put({ noteId, text, localRev: rev, savedAt: now, byteLength });
+      const noteStore = tx.objectStore('notes');
+      const noteRecord = await requestToPromise(noteStore.get(noteId));
+      noteRecord.title = title;
+      noteRecord.updatedAt = now;
+      noteRecord.localRev = rev;
+      noteStore.put(noteRecord);
+      await awaitTransactionComplete(tx);
+
+      durableRevs.set(noteId, rev);
+      receipt = { noteId, requestedRev: rev, durableRev: rev, completedAt: Date.now() };
+      emit({ type: 'saved', ...receipt });
+    } catch (error) {
+      receipt = { noteId, requestedRev: rev, durableRev: durableRevs.get(noteId) || 0, completedAt: Date.now(), error };
+      emit({ type: 'save-failed', ...receipt });
+    }
+
+    resolveWaiters(noteId, receipt);
+  }
+
+  q.inFlight = false;
 }

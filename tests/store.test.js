@@ -63,3 +63,69 @@ test('a note whose text is entirely empty is titled Untitled and still appears i
   assertEquals(list[0].title, 'Untitled');
   await store.close();
 });
+
+test('saveDraft returns synchronously and increments localRev per note', async () => {
+  await store.open({ dbName: `heldnote-test-${Date.now()}` });
+  const note = await store.createNote();
+
+  const rev1 = store.saveDraft(note.id, 'hello');
+  const rev2 = store.saveDraft(note.id, 'hello world');
+  assert(rev2 > rev1, 'expected localRev to increase on each saveDraft call');
+
+  const receipt = await store.flush(note.id, rev2);
+  assertEquals(receipt.durableRev, rev2);
+  assert(!receipt.error, 'expected no error on a normal flush');
+
+  const reloaded = await store.getNote(note.id);
+  assertEquals(reloaded.text, 'hello world');
+  assertEquals(reloaded.localRev, rev2);
+
+  await store.close();
+});
+
+test('coalescing: rapid saveDraft calls collapse into one transaction carrying the latest text', async () => {
+  await store.open({ dbName: `heldnote-test-${Date.now()}` });
+  const note = await store.createNote();
+
+  let lastRev;
+  for (let i = 0; i < 20; i += 1) {
+    lastRev = store.saveDraft(note.id, `text-${i}`);
+  }
+  const receipt = await store.flush(note.id, lastRev);
+  assertEquals(receipt.durableRev, lastRev);
+
+  const reloaded = await store.getNote(note.id);
+  assertEquals(reloaded.text, 'text-19');
+
+  await store.close();
+});
+
+test('revision 10 completing while revision 11 is on screen: flush(id, 10) still resolves correctly after 11 is queued', async () => {
+  await store.open({ dbName: `heldnote-test-${Date.now()}` });
+  const note = await store.createNote();
+
+  const rev10 = store.saveDraft(note.id, 'state-10');
+  const flush10 = store.flush(note.id, rev10);
+  const rev11 = store.saveDraft(note.id, 'state-11');
+
+  const receipt10 = await flush10;
+  assert(receipt10.durableRev >= rev10, 'flush for rev10 must resolve once rev10 (or newer) is durable');
+
+  const receipt11 = await store.flush(note.id, rev11);
+  assertEquals(receipt11.durableRev, rev11);
+
+  await store.close();
+});
+
+test('no accepted revision waits more than 300ms from input to transaction completion', async () => {
+  await store.open({ dbName: `heldnote-test-${Date.now()}` });
+  const note = await store.createNote();
+
+  const start = Date.now();
+  const rev = store.saveDraft(note.id, 'timed');
+  const receipt = await store.flush(note.id, rev);
+  const elapsed = receipt.completedAt - start;
+  assert(elapsed <= 300, `expected completion within 300ms, took ${elapsed}ms`);
+
+  await store.close();
+});
