@@ -167,3 +167,68 @@ test('listVersions pages backwards newest-first without returning text', async (
 
   await store.close();
 });
+
+test('restore while an uncommitted draft exists preserves that draft as a pre-restore checkpoint', async () => {
+  await store.open({ dbName: `heldnote-test-${Date.now()}` });
+  const note = await store.createNote();
+
+  const rev1 = store.saveDraft(note.id, 'version one');
+  await store.flush(note.id, rev1);
+  const v1 = await store.commitVersion(note.id);
+
+  const rev2 = store.saveDraft(note.id, 'unversioned edit');
+  await store.flush(note.id, rev2);
+
+  await store.restoreVersion(note.id, v1.seq);
+
+  const reloaded = await store.getNote(note.id);
+  assertEquals(reloaded.text, 'version one', 'restore must apply the selected version text');
+
+  const versions = await store.listVersions(note.id, {});
+  const texts = await Promise.all(versions.map((v) => store.getVersion(note.id, v.seq)));
+  assert(texts.some((v) => v.text === 'unversioned edit'), 'the unversioned edit must survive as a checkpoint version');
+
+  await store.close();
+});
+
+test('a stale draft callback completing after a restore does not overwrite the restored text', async () => {
+  await store.open({ dbName: `heldnote-test-${Date.now()}` });
+  const note = await store.createNote();
+
+  const rev1 = store.saveDraft(note.id, 'base');
+  await store.flush(note.id, rev1);
+  const v1 = await store.commitVersion(note.id);
+
+  const rev2 = store.saveDraft(note.id, 'changed before restore');
+  // Deliberately do not flush rev2 before restoring — it is "in flight".
+  await store.restoreVersion(note.id, v1.seq);
+
+  await store.flush(note.id, rev2).catch(() => {});
+
+  const reloaded = await store.getNote(note.id);
+  assertEquals(reloaded.text, 'base', 'the restore must win over a stale in-flight draft write');
+
+  await store.close();
+});
+
+test('restoring is itself committed as a new version and never deletes an existing version', async () => {
+  await store.open({ dbName: `heldnote-test-${Date.now()}` });
+  const note = await store.createNote();
+
+  const rev1 = store.saveDraft(note.id, 'first');
+  await store.flush(note.id, rev1);
+  const v1 = await store.commitVersion(note.id);
+
+  const rev2 = store.saveDraft(note.id, 'second');
+  await store.flush(note.id, rev2);
+  const v2 = await store.commitVersion(note.id);
+
+  const before = await store.listVersions(note.id, {});
+  await store.restoreVersion(note.id, v1.seq);
+  const after = await store.listVersions(note.id, {});
+
+  assert(after.length > before.length, 'restore must add at least one new version, never remove one');
+  assert(after.some((v) => v.seq === v1.seq) && after.some((v) => v.seq === v2.seq), 'no existing version may be deleted by a restore');
+
+  await store.close();
+});

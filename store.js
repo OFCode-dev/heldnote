@@ -290,6 +290,11 @@ async function runDraftWrite(noteId) {
   while (q.pendingText !== null) {
     const text = q.pendingText;
     const rev = q.pendingRev;
+    // Read at dequeue, before any await, so it names the generation this write
+    // belongs to. restoreVersion() bumps the generation before opening its own
+    // transaction; the comparison below is what stops a write dequeued under
+    // the old generation from publishing itself over a restore.
+    const generationAtQueue = currentGeneration(noteId);
     q.pendingText = null;
     q.pendingRev = null;
 
@@ -303,6 +308,9 @@ async function runDraftWrite(noteId) {
       const byteLength = new TextEncoder().encode(text).length;
       const title = deriveTitle(text);
 
+      if (currentGeneration(noteId) !== generationAtQueue) {
+        throw Object.assign(new Error('stale write superseded by a restore'), { code: 'stale-generation' });
+      }
       const tx = openTransaction(conn, ['notes', 'drafts'], 'readwrite', { durability: 'strict' });
       tx.objectStore('drafts').put({ noteId, text, localRev: rev, savedAt: now, byteLength });
       const noteStore = tx.objectStore('notes');
@@ -406,4 +414,85 @@ export async function getVersion(id, seq) {
   const record = await requestToPromise(tx.objectStore('versions').get([id, seq]));
   if (!record) throw Object.assign(new Error(`version ${id}/${seq} not found`), { code: 'not-found' });
   return { seq: record.seq, at: record.at, sourceRev: record.sourceRev, text: record.text };
+}
+
+// --- restore: fenced, and never destructive --------------------------------
+//
+// Restoring is an edit, not a rewind: it adds versions and never removes one.
+// Two hazards are handled here. Text that was drafted but never versioned would
+// be overwritten by the restore, so it is first snapshotted as a pre-restore
+// checkpoint version. And a draft write that is already in flight would land
+// after the restore and silently undo it, so each restore bumps a per-note
+// generation counter that runDraftWrite() checks before it opens its
+// transaction. The bump happens strictly before the restore's own transaction
+// is created, so a write that passes the check has already opened its
+// transaction and therefore commits ahead of the restore.
+
+const noteGeneration = new Map(); // noteId -> generation counter, bumped by each restore
+
+function currentGeneration(noteId) {
+  return noteGeneration.get(noteId) || 0;
+}
+
+export async function restoreVersion(id, seq) {
+  const target = await getVersion(id, seq);
+
+  const currentRev = revCounters.get(id) || 0;
+  if (currentRev > 0) {
+    await flush(id, currentRev).catch(() => {});
+  }
+
+  noteGeneration.set(id, currentGeneration(id) + 1);
+  const q = queueFor(id);
+  q.pendingText = null;
+  q.pendingRev = null;
+
+  const draftTx = openTransaction(conn, ['drafts'], 'readonly');
+  const currentDraft = await requestToPromise(draftTx.objectStore('drafts').get(id));
+
+  const newestVersions = await listVersions(id, { limit: 1 });
+  const newestVersionText = newestVersions.length ? (await getVersion(id, newestVersions[0].seq)).text : undefined;
+  const needsCheckpoint = currentDraft.text !== newestVersionText;
+
+  const nextRev = currentRev + 1;
+  revCounters.set(id, nextRev);
+  // durableRevs is NOT set here. flush()'s fast path treats durableRevs as the
+  // sole authority for "this revision is on disk", so setting it before the
+  // transaction below actually commits would let a concurrent flush(id, nextRev)
+  // resolve for a restore that hasn't happened yet. It is set after the
+  // transaction completes instead, matching every other durableRevs write here.
+
+  const baseSeq = await nextSeq(id);
+  const checkpointSeq = needsCheckpoint ? baseSeq : null;
+  const restoredSeq = needsCheckpoint ? baseSeq + 1 : baseSeq;
+
+  const tx = openTransaction(conn, ['notes', 'drafts', 'versions'], 'readwrite', { durability: 'strict' });
+  const versionsStore = tx.objectStore('versions');
+
+  const at = Date.now();
+  if (needsCheckpoint) {
+    const checkpointByteLength = new TextEncoder().encode(currentDraft.text).length;
+    versionsStore.put({ noteId: id, seq: checkpointSeq, at, sourceRev: currentDraft.localRev, text: currentDraft.text, byteLength: checkpointByteLength });
+  }
+
+  const byteLength = new TextEncoder().encode(target.text).length;
+  versionsStore.put({ noteId: id, seq: restoredSeq, at, sourceRev: nextRev, text: target.text, byteLength });
+
+  const draftStore = tx.objectStore('drafts');
+  draftStore.put({ noteId: id, text: target.text, localRev: nextRev, savedAt: at, byteLength });
+
+  const noteStore = tx.objectStore('notes');
+  const noteRecord = await requestToPromise(noteStore.get(id));
+  noteRecord.title = deriveTitle(target.text);
+  noteRecord.updatedAt = at;
+  noteRecord.localRev = nextRev;
+  noteStore.put(noteRecord);
+
+  await awaitTransactionComplete(tx);
+
+  durableRevs.set(id, nextRev);
+  lastVersionText.set(id, target.text);
+  emit({ type: 'note-changed', noteId: id });
+
+  return { seq: restoredSeq, at, sourceRev: nextRev, size: byteLength };
 }
