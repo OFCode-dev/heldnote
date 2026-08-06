@@ -829,3 +829,59 @@ export async function runMaintenance() {
 async function withGlobalLock(work) {
   return navigator.locks.request('heldnote-global', work);
 }
+
+// --- per-note locking: cross-tab mutual exclusion via Web Locks ------------
+//
+// Distinct from draftQueues/q.restoring above: those serialize writes within
+// a single tab/connection. acquireNoteLock/releaseNoteLock instead let one
+// tab claim exclusive edit access to a note while other tabs (in a later
+// task) can see the lock is held and open the note read-only. Named locks
+// are per-origin, not per-tab, so a second acquireNoteLock(id) call for a
+// note whose lock is still held — even one issued from this same module — is
+// correctly refused by the browser: nothing here needs to track "who is
+// asking", only whether the named lock is free.
+//
+// heldLocks intentionally does NOT short-circuit a repeat acquire for a note
+// this tab already holds. ifAvailable:true reports the lock as unavailable
+// until the previous holder's callback promise settles, and that is exactly
+// the mutual-exclusion behaviour callers depend on.
+
+const heldLocks = new Map(); // noteId -> release function for the lock this tab holds
+
+export async function acquireNoteLock(id) {
+  const lockName = `heldnote-note-${id}`;
+
+  let released;
+  const releasePromise = new Promise((resolve) => { released = resolve; });
+
+  const outcome = await new Promise((resolve) => {
+    let grantedFlag = false;
+    navigator.locks.request(lockName, { ifAvailable: true }, (lock) => {
+      if (!lock) {
+        resolve({ granted: false, heldBy: 'another tab' });
+        return Promise.resolve();
+      }
+      grantedFlag = true;
+      heldLocks.set(id, released);
+      resolve({ granted: true });
+      // Held until releaseNoteLock() resolves this promise.
+      return releasePromise;
+    }).catch(() => {
+      if (!grantedFlag) resolve({ granted: false, heldBy: 'another tab' });
+    });
+  });
+
+  if (outcome.granted) {
+    emit({ type: 'lock-changed', noteId: id, granted: true });
+  }
+  return outcome;
+}
+
+export async function releaseNoteLock(id) {
+  const release = heldLocks.get(id);
+  if (release) {
+    release();
+    heldLocks.delete(id);
+    emit({ type: 'lock-changed', noteId: id, granted: false });
+  }
+}

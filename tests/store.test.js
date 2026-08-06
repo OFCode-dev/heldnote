@@ -377,3 +377,37 @@ test('a draft write that fails on quota after pruning and retry enters memory-on
 
   await store.close();
 });
+
+// --- Task 12: multi-tab locking (Web Locks) ---------------------------------
+
+test('acquireNoteLock: a second acquire on the same note is not granted while the first is held', async () => {
+  await store.open({ dbName: `heldnote-test-${Date.now()}` });
+  const note = await store.createNote();
+
+  const first = await store.acquireNoteLock(note.id);
+  assert(first.granted, 'expected the first acquire to succeed');
+
+  const second = await store.acquireNoteLock(note.id);
+  assertEquals(second.granted, false);
+  assert(typeof second.heldBy === 'string', 'expected to learn which holder has the lock');
+
+  await store.releaseNoteLock(note.id);
+  const third = await store.acquireNoteLock(note.id);
+  assert(third.granted, 'expected the lock to be acquirable again after release');
+
+  await store.close();
+});
+
+test("two different notes do not contend for each other's lock", async () => {
+  await store.open({ dbName: `heldnote-test-${Date.now()}` });
+  const noteA = await store.createNote();
+  const noteB = await store.createNote();
+
+  const a = await store.acquireNoteLock(noteA.id);
+  const b = await store.acquireNoteLock(noteB.id);
+  assert(a.granted && b.granted, 'expected independent notes to lock independently');
+
+  await store.releaseNoteLock(noteA.id);
+  await store.releaseNoteLock(noteB.id);
+  await store.close();
+});
