@@ -360,6 +360,15 @@ async function runDraftWrite(noteId) {
 const lastVersionText = new Map(); // noteId -> text of the newest committed version, for dedup
 
 export async function commitVersion(id) {
+  const q = queueFor(id);
+  // A restore already in progress will itself commit the next version (its
+  // own write, or whatever runs after it in the finally block), so there is
+  // nothing useful for a routine commit to do — skip rather than contend.
+  // This mirrors restoreVersion's own "restore-in-progress" check but returns
+  // null instead of throwing: commitVersion is polled routinely by an idle
+  // timer (Task 18) and null already means "nothing to commit right now".
+  if (q.restoring) return null;
+
   const currentRev = revCounters.get(id) || 0;
   if (currentRev > 0) {
     await flush(id, currentRev).catch(() => {});
@@ -372,16 +381,32 @@ export async function commitVersion(id) {
     return null;
   }
 
-  const seq = await nextSeq(id);
-  const at = Date.now();
-  const byteLength = new TextEncoder().encode(draft.text).length;
+  // Second check-and-set, synchronous (no await between them), exactly like
+  // restoreVersion's own lock acquisition: a restore (or another commit) may
+  // have started during the flush/draft-read above, and this is the point
+  // that must not race it. nextSeq() + the write below are the vulnerable
+  // "allocate a seq, then write a version record in a later transaction"
+  // shape restoreVersion's lock exists to fence — commitVersion has the same
+  // shape and reuses the same q.restoring flag rather than a second one.
+  if (q.restoring) return null;
+  q.restoring = true;
+  try {
+    const seq = await nextSeq(id);
+    const at = Date.now();
+    const byteLength = new TextEncoder().encode(draft.text).length;
 
-  const writeTx = openTransaction(conn, ['versions'], 'readwrite', { durability: 'strict' });
-  writeTx.objectStore('versions').put({ noteId: id, seq, at, sourceRev: draft.localRev, text: draft.text, byteLength });
-  await awaitTransactionComplete(writeTx);
+    const writeTx = openTransaction(conn, ['versions'], 'readwrite', { durability: 'strict' });
+    writeTx.objectStore('versions').put({ noteId: id, seq, at, sourceRev: draft.localRev, text: draft.text, byteLength });
+    await awaitTransactionComplete(writeTx);
 
-  lastVersionText.set(id, draft.text);
-  return { seq, at, sourceRev: draft.localRev, size: byteLength };
+    lastVersionText.set(id, draft.text);
+    return { seq, at, sourceRev: draft.localRev, size: byteLength };
+  } finally {
+    // Released whether the write succeeded or threw, same discipline as
+    // restoreVersion's finally: leaving it set would wedge the note's draft
+    // queue (saveDraft's launch guard checks q.restoring too) permanently.
+    q.restoring = false;
+  }
 }
 
 async function nextSeq(noteId) {
@@ -575,4 +600,106 @@ async function runRestore(id, target, currentRev) {
   emit({ type: 'note-changed', noteId: id });
 
   return { seq: restoredSeq, at, sourceRev: nextRev, size: byteLength };
+}
+
+// --- maintenance: the pruning ladder ----------------------------------------
+//
+// runMaintenance() walks every note and thins its version history:
+//   1. the newest PROTECTED_RECENT_COUNT versions are always kept;
+//   2. every version from the last PROTECTED_RECENT_MS is always kept;
+//   3. the newest version is always kept, even if 1 and 2 somehow left it out
+//      (an empty history is impossible, but this is the invariant the whole
+//      task exists to guarantee, so it is asserted directly rather than left
+//      to fall out of 1 and 2);
+//   4. everything older than that is thinned to one version per UTC day
+//      (ties broken by seq, i.e. the latest version written that day wins);
+//   5. all of the above is bounded by PER_NOTE_HISTORY_BYTE_BUDGET. If the
+//      protected set from 1–3 alone already exceeds the budget, there is
+//      nothing pruning can do without deleting a protected recovery point —
+//      so this note is skipped entirely for this run (nothing is deleted,
+//      not even the day-thinning that would otherwise apply) and a
+//      quota-warning event is emitted instead.
+//
+// Each note is read and deleted in its own pair of transactions, so a crash
+// or reload mid-run leaves already-pruned notes pruned and resumes cleanly on
+// the rest — recomputing toDelete from scratch is always safe because it is
+// derived from what is still on disk, never from what was deleted last time.
+//
+// v1 has no automatic trash purge — design.md is explicit that trash is
+// emptied only on explicit user confirmation, overriding the looser "and the
+// trash purge" wording in store-api.md. purgeNote() (Task 6) already covers
+// the explicit path; nothing automatic happens here, so `purged` is always 0.
+
+async function listNoteIds() {
+  const tx = openTransaction(conn, ['notes'], 'readonly');
+  const ids = [];
+  await new Promise((resolve, reject) => {
+    const req = tx.objectStore('notes').openCursor();
+    req.onsuccess = () => {
+      const cursor = req.result;
+      if (!cursor) { resolve(); return; }
+      ids.push(cursor.value.id);
+      cursor.continue();
+    };
+    req.onerror = () => reject(req.error);
+  });
+  return ids;
+}
+
+function utcDayKey(at) {
+  const d = new Date(at);
+  return `${d.getUTCFullYear()}-${d.getUTCMonth()}-${d.getUTCDate()}`;
+}
+
+async function pruneNote(noteId) {
+  const all = await listVersions(noteId, {});
+  if (all.length === 0) return 0;
+
+  const now = Date.now();
+  const protectedByCount = new Set(all.slice(0, LIMITS.PROTECTED_RECENT_COUNT).map((v) => v.seq));
+  const protectedByAge = new Set(all.filter((v) => now - v.at <= LIMITS.PROTECTED_RECENT_MS).map((v) => v.seq));
+  // all[0] is the newest version (listVersions is newest-first): explicitly
+  // protected regardless of count/age so runMaintenance can never remove it.
+  const protectedSeqs = new Set([...protectedByCount, ...protectedByAge, all[0].seq]);
+
+  const protectedBytes = all.filter((v) => protectedSeqs.has(v.seq)).reduce((sum, v) => sum + v.size, 0);
+  if (protectedBytes > LIMITS.PER_NOTE_HISTORY_BYTE_BUDGET) {
+    emit({ type: 'quota-warning', noteId, reason: 'protected-history-over-budget' });
+    return 0;
+  }
+
+  const older = all.filter((v) => !protectedSeqs.has(v.seq));
+  const keepOnePerDay = new Map();
+  for (const v of older) {
+    const key = utcDayKey(v.at);
+    const existing = keepOnePerDay.get(key);
+    if (!existing || v.seq > existing.seq) keepOnePerDay.set(key, v);
+  }
+  const keepSeqs = new Set([...protectedSeqs, ...Array.from(keepOnePerDay.values()).map((v) => v.seq)]);
+  const toDelete = all.filter((v) => !keepSeqs.has(v.seq));
+
+  if (toDelete.length === 0) return 0;
+
+  const tx = openTransaction(conn, ['versions'], 'readwrite', { durability: 'strict' });
+  const versionsStore = tx.objectStore('versions');
+  for (const v of toDelete) {
+    versionsStore.delete([noteId, v.seq]);
+  }
+  await awaitTransactionComplete(tx);
+  return toDelete.length;
+}
+
+export async function runMaintenance() {
+  return withGlobalLock(async () => {
+    const noteIds = await listNoteIds();
+    let pruned = 0;
+    for (const id of noteIds) {
+      pruned += await pruneNote(id);
+    }
+    return { pruned, purged: 0 };
+  });
+}
+
+async function withGlobalLock(work) {
+  return navigator.locks.request('heldnote-global', work);
 }

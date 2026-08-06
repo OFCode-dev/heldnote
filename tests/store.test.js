@@ -1,5 +1,6 @@
 import { test, assert, assertEquals } from './test-harness.js';
 import * as store from '../store.js';
+import { setFaultInjection, clearFaultInjection } from '../db.js';
 
 test('open() resolves available:true against a fresh database', async () => {
   const status = await store.open({ dbName: `heldnote-test-${Date.now()}` });
@@ -229,6 +230,103 @@ test('restoring is itself committed as a new version and never deletes an existi
 
   assert(after.length > before.length, 'restore must add at least one new version, never remove one');
   assert(after.some((v) => v.seq === v1.seq) && after.some((v) => v.seq === v2.seq), 'no existing version may be deleted by a restore');
+
+  await store.close();
+});
+
+test('runMaintenance never removes the newest version, anything from the last 24h, or anything in the newest-50 window', async () => {
+  await store.open({ dbName: `heldnote-test-${Date.now()}` });
+  const note = await store.createNote();
+
+  for (let i = 0; i < 60; i += 1) {
+    const rev = store.saveDraft(note.id, `text-${i}`);
+    await store.flush(note.id, rev);
+    await store.commitVersion(note.id);
+  }
+
+  const before = await store.listVersions(note.id, {});
+  const result = await store.runMaintenance();
+  const after = await store.listVersions(note.id, {});
+
+  assertEquals(after.length, before.length, 'nothing should be pruned when everything is within 24h');
+  assertEquals(result.purged, 0, 'v1 has no automatic trash purge');
+
+  await store.close();
+});
+
+test('runMaintenance is idempotent: a second call changes nothing already pruned', async () => {
+  await store.open({ dbName: `heldnote-test-${Date.now()}` });
+  await store.createNote();
+
+  await store.runMaintenance();
+  const second = await store.runMaintenance();
+  assertEquals(second.pruned, 0, 'a second run with nothing new to prune must prune nothing');
+
+  await store.close();
+});
+
+// --- Task 10 Part B: commitVersion needs restoreVersion's mutual exclusion -
+//
+// commitVersion and restoreVersion share the same vulnerable shape: allocate
+// a seq via nextSeq() (a separate, earlier readonly transaction), then write
+// the version record in a separate, later transaction. Two such operations
+// racing on the same note can compute the same seq and one write silently
+// clobbers the other's version record. Both now guard their seq-allocation-
+// and-write with the same q.restoring flag restoreVersion already used.
+
+test('commitVersion is safe against a concurrent commitVersion racing on the same note', async () => {
+  await store.open({ dbName: `heldnote-test-${Date.now()}` });
+  const note = await store.createNote();
+
+  const rev1 = store.saveDraft(note.id, 'v1 text');
+  await store.flush(note.id, rev1);
+  await store.commitVersion(note.id);
+
+  const rev2 = store.saveDraft(note.id, 'v2 text');
+  await store.flush(note.id, rev2);
+
+  const [a, b] = await Promise.all([store.commitVersion(note.id), store.commitVersion(note.id)]);
+  const winners = [a, b].filter((r) => r !== null);
+  assertEquals(winners.length, 1, 'exactly one concurrent commitVersion should write a version; the other must skip (null)');
+
+  const versions = await store.listVersions(note.id, {});
+  const seqs = versions.map((v) => v.seq);
+  assertEquals(new Set(seqs).size, seqs.length, 'no two versions may share a seq');
+  assertEquals(versions.length, 2, 'expected exactly 2 versions: the initial commit and the winning race commit');
+
+  await store.close();
+});
+
+test('commitVersion returns null (does not race) while a restoreVersion write is in flight on the same note', async () => {
+  await store.open({ dbName: `heldnote-test-${Date.now()}` });
+  const note = await store.createNote();
+
+  const rev1 = store.saveDraft(note.id, 'base');
+  await store.flush(note.id, rev1);
+  const v1 = await store.commitVersion(note.id);
+
+  const rev2 = store.saveDraft(note.id, 'changed');
+  await store.flush(note.id, rev2);
+
+  let duringRestore;
+  setFaultInjection({ delayCompleteMs: 60 });
+  try {
+    const restorePromise = store.restoreVersion(note.id, v1.seq);
+    // restoreVersion sets q.restoring synchronously (well before its delayed
+    // write transaction completes), so this is comfortably inside the
+    // window where the write is durably "in flight but not yet committed".
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    duringRestore = await store.commitVersion(note.id);
+    await restorePromise;
+  } finally {
+    clearFaultInjection();
+  }
+
+  assertEquals(duringRestore, null, 'commitVersion must skip while a restore holds the lock, not race its seq allocation and write');
+
+  const versions = await store.listVersions(note.id, {});
+  const seqs = versions.map((v) => v.seq);
+  assertEquals(new Set(seqs).size, seqs.length, 'no two versions may share a seq');
 
   await store.close();
 });
