@@ -571,13 +571,24 @@ export async function commitVersion(id) {
   }
 }
 
+// Ordered by the versions store's OWN primary key ([noteId, seq]), never by the
+// by_note_at index. The index is ordered by `at`, so its newest record is the
+// highest `seq` only while Date.now() happens to be monotonic for this note.
+// Two ordinary events break that coincidence, and both silently destroy data,
+// because a reused seq means put() overwrites an existing version record:
+//   - a clock rollback (NTP correction, manual change) makes the next version's
+//     `at` smaller than the previous one's, so the previous record stays
+//     "newest" by index order and its seq is handed out again;
+//   - importing a backup whose newest version carries an `at` ahead of the
+//     local clock leaves that record permanently "newest" by index order, so
+//     every subsequent local commit computes the same seq.
+// The primary key range below is the seq order itself, so neither matters.
 async function nextSeq(noteId) {
   const tx = openTransaction(conn, ['versions'], 'readonly');
-  const index = tx.objectStore('versions').index('by_note_at');
-  const range = IDBKeyRange.bound([noteId, -Infinity, -Infinity], [noteId, Infinity, Infinity]);
+  const range = IDBKeyRange.bound([noteId, -Infinity], [noteId, Infinity]);
   let maxSeq = 0;
   await new Promise((resolve, reject) => {
-    const req = index.openCursor(range, 'prev');
+    const req = tx.objectStore('versions').openCursor(range, 'prev');
     req.onsuccess = () => {
       const cursor = req.result;
       if (cursor) { maxSeq = cursor.value.seq; }

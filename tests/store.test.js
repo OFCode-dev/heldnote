@@ -522,6 +522,91 @@ test('importing a file that is not valid JSON fails with invalid-import and chan
   await store.close();
 });
 
+// --- nextSeq must order by seq, not by `at` ---------------------------------
+//
+// The versions store is keyed [noteId, seq], so a reused seq is not a duplicate
+// — it is a put() that OVERWRITES an existing version record. nextSeq()
+// therefore has to derive the next seq from the seq order itself. Deriving it
+// from the by_note_at index instead only works while Date.now() is monotonic
+// for the note; both tests below break that assumption in a way a real user
+// can reach, and each one reuses a seq (and destroys a version) if nextSeq()
+// walks the index.
+
+test('a clock rollback between version commits still yields fresh seqs, never a reused one', async () => {
+  await store.open({ dbName: `heldnote-test-${Date.now()}` });
+  const note = await store.createNote();
+
+  let rev = store.saveDraft(note.id, 'a');
+  await store.flush(note.id, rev);
+  await store.commitVersion(note.id);
+
+  // An NTP correction (or a manual clock change) moves the wall clock an hour
+  // backwards, so the next two commits carry an `at` older than version 1's.
+  const realNow = Date.now;
+  try {
+    Date.now = () => realNow.call(Date) - 60 * 60 * 1000;
+    rev = store.saveDraft(note.id, 'b');
+    await store.flush(note.id, rev);
+    await store.commitVersion(note.id);
+    rev = store.saveDraft(note.id, 'c');
+    await store.flush(note.id, rev);
+    await store.commitVersion(note.id);
+  } finally {
+    Date.now = realNow;
+  }
+
+  const versions = await store.listVersions(note.id, {});
+  const seqs = versions.map((v) => v.seq);
+  assertEquals(new Set(seqs).size, seqs.length, 'no two versions may share a seq across a clock rollback');
+  assertEquals(versions.length, 3, 'all three commits must survive; a reused seq would have overwritten one');
+
+  const texts = (await Promise.all(versions.map((v) => store.getVersion(note.id, v.seq)))).map((v) => v.text).sort();
+  assertEquals(JSON.stringify(texts), JSON.stringify(['a', 'b', 'c']), 'no version record may be overwritten by a rolled-back clock');
+
+  await store.close();
+});
+
+test('after importing a backup whose newest version is dated in the future, local commits still get fresh seqs', async () => {
+  await store.open({ dbName: `heldnote-test-${Date.now()}` });
+
+  // Built as JSON rather than by exporting, so the future `at` does not depend
+  // on the real wall clock.
+  const future = Date.now() + 365 * 24 * 60 * 60 * 1000;
+  const payload = {
+    schemaVersion: 1,
+    exportedAt: Date.now(),
+    notes: [{ id: 'future-note', title: 'imported', text: 'imported text', createdAt: 1, updatedAt: 1, pinned: false, deletedAt: null, localRev: 2 }],
+    versions: [
+      { noteId: 'future-note', seq: 1, at: 1000, sourceRev: 1, text: 'older' },
+      { noteId: 'future-note', seq: 2, at: future, sourceRev: 2, text: 'imported text' },
+    ],
+  };
+  const file = new File([JSON.stringify(payload)], 'backup.json', { type: 'application/json' });
+  await store.importAll(file, { mode: 'replace' });
+
+  // Two local commits: the first is safe even under an `at`-ordered nextSeq
+  // (the future-dated record still happens to hold the highest seq), but the
+  // record it writes carries a local `at` far below that future one — so a
+  // second commit ordered by `at` hands out the same seq again and overwrites
+  // the first.
+  let rev = store.saveDraft('future-note', 'typed locally');
+  await store.flush('future-note', rev);
+  const first = await store.commitVersion('future-note');
+  assertEquals(first.seq, 3);
+
+  rev = store.saveDraft('future-note', 'typed some more');
+  await store.flush('future-note', rev);
+  const second = await store.commitVersion('future-note');
+  assertEquals(second.seq, 4, 'a local commit must get a seq above every existing one, not a colliding one');
+
+  const versions = await store.listVersions('future-note', {});
+  assertEquals(versions.length, 4, 'the imported pair plus both local commits must all survive');
+  assertEquals((await store.getVersion('future-note', 2)).text, 'imported text', 'the future-dated imported version must not be overwritten');
+  assertEquals((await store.getVersion('future-note', 3)).text, 'typed locally', 'the first local version must not be overwritten');
+
+  await store.close();
+});
+
 // --- Task 14: persistence request timing ------------------------------------
 
 test('persist() is requested only after the first version commit, not before', async () => {
