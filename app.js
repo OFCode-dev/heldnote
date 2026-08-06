@@ -88,8 +88,16 @@ async function boot() {
       // editor must reload from store rather than keep showing the pre-restore
       // text; re-opening it (same as a fresh selection) is the simplest way to
       // pick up what restoreVersion just wrote.
+      //
+      // But history-ui.js's restore-in-progress retry loop can take up to
+      // ~1.2s to settle, and the user may have selected a different note by
+      // then. onRestore fires against whatever note it was created for (`id`,
+      // captured here), so it must check that note is still the one on screen
+      // before touching the editor — otherwise a slow retry for note A that
+      // resolves after the user has already switched to note B would yank B's
+      // editor out from under them and silently swap in A's.
       renderHistoryPanel(document.getElementById('history-panel'), id, {
-        onRestore: () => openEditor(id),
+        onRestore: () => { if (id === currentNoteId) openEditor(id); },
       });
     },
   });

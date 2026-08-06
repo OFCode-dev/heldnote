@@ -29,14 +29,30 @@ async function restoreWithRetry(noteId, seq) {
 
 export function renderHistoryPanel(container, noteId, { onRestore } = {}) {
   container.hidden = false;
-  container.innerHTML = `<h2>${t('history.title')}</h2><ul id="version-list"></ul><div id="version-preview"></div>`;
+  container.innerHTML = `<h2>${t('history.title')}</h2><ul id="version-list"></ul><div id="version-preview"></div><div id="history-notice" role="alert" hidden></div>`;
   const list = container.querySelector('#version-list');
   const preview = container.querySelector('#version-preview');
+  // Separate from `preview`, and deliberately NOT gated by previewToken below:
+  // a restore failure is a real, user-actionable event that must surface even
+  // if the user has since clicked away to preview a different version. The
+  // preview pane itself is fine to lose a stale update (nothing incorrect is
+  // shown), but silently dropping a genuine failure would leave a stuck
+  // restore with no visible sign anything went wrong.
+  const notice = container.querySelector('#history-notice');
+  function showNotice(message) {
+    notice.hidden = false;
+    notice.textContent = message;
+  }
+  function hideNotice() {
+    notice.hidden = true;
+    notice.textContent = '';
+  }
   // Bumped on every preview click so a slow restore retry loop from an older
   // click (still awaiting store.restoreVersion) can tell, once it finally
   // settles, that the user has since previewed something else — and skip
   // writing into a preview pane that has moved on. Same shape as editor.js's
-  // `destroyed` flag guarding its own late-arriving async callback.
+  // `destroyed` flag guarding its own late-arriving async callback. This only
+  // gates the preview pane's own text, never the failure notice above.
   let previewToken = 0;
 
   async function refresh() {
@@ -58,6 +74,7 @@ export function renderHistoryPanel(container, noteId, { onRestore } = {}) {
         restoreButton.textContent = t('history.restoreConfirm');
         restoreButton.addEventListener('click', async () => {
           restoreButton.disabled = true;
+          hideNotice();
           try {
             await restoreWithRetry(noteId, info.seq);
             // refresh() and onRestore() reflect a real, already-committed change
@@ -69,8 +86,14 @@ export function renderHistoryPanel(container, noteId, { onRestore } = {}) {
             await refresh();
             if (onRestore) onRestore();
           } catch (error) {
-            if (token !== previewToken) return;
-            preview.innerHTML = `<p role="alert">${t('history.restoreFailed')}</p>`;
+            // Unlike the preview text above, this must never be silently
+            // dropped just because the user looked at a different version in
+            // the meantime — a genuinely stuck restore (retries exhausted, or
+            // a non-retriable error) has to surface somehow. console.error is
+            // for diagnostics; showNotice is the user-visible signal, and it
+            // deliberately ignores the previewToken check.
+            console.error('heldnote: restore failed', error);
+            showNotice(t('history.restoreFailed'));
           }
         });
         preview.append(pre, restoreButton);
