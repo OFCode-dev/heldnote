@@ -520,6 +520,18 @@ export async function commitVersion(id) {
     // restoreVersion's finally: leaving it set would wedge the note's draft
     // queue (saveDraft's launch guard checks q.restoring too) permanently.
     q.restoring = false;
+    // Same shape as restoreVersion's finally, and for the same reason: text
+    // typed while the lock was held was accepted (coalesced into
+    // pendingText) but never started, because saveDraft's launch guard
+    // checks q.restoring. Left alone, it would sit stuck until some later,
+    // unrelated saveDraft() call happened to arrive and re-trigger that
+    // guard. This task's prune-and-retry can hold the lock across an extra
+    // runMaintenance() pass plus a retried write — meaningfully longer than
+    // a single write — which widens that window, so it is started here
+    // rather than left to chance.
+    if (q.pendingText !== null && !q.inFlight) {
+      runDraftWrite(id);
+    }
   }
 }
 
