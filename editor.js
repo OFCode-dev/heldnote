@@ -7,8 +7,10 @@ export function renderEditor(container, noteId, { onRevChange } = {}) {
 
   let idleTimer = null;
   let maxWaitTimer = null;
+  let destroyed = false;
 
   store.getNote(noteId).then((note) => {
+    if (destroyed) return;
     textarea.value = note.text;
     if (onRevChange) onRevChange(note.localRev);
   });
@@ -46,6 +48,7 @@ export function renderEditor(container, noteId, { onRevChange } = {}) {
 
   return {
     destroy() {
+      destroyed = true;
       textarea.removeEventListener('input', onInput);
       clearTimeout(idleTimer);
       clearTimeout(maxWaitTimer);
