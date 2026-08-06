@@ -485,3 +485,30 @@ test('importing a file that is not valid JSON fails with invalid-import and chan
 
   await store.close();
 });
+
+// --- Task 14: persistence request timing ------------------------------------
+
+test('persist() is requested only after the first version commit, not before', async () => {
+  await store.open({ dbName: `heldnote-test-${Date.now()}` });
+  const note = await store.createNote();
+
+  let persistCalls = 0;
+  const originalPersist = navigator.storage.persist;
+  navigator.storage.persist = async () => { persistCalls += 1; return true; };
+
+  const rev = store.saveDraft(note.id, 'text');
+  await store.flush(note.id, rev);
+  assertEquals(persistCalls, 0, 'persist() must not be requested from the draft path');
+
+  await store.commitVersion(note.id);
+  assertEquals(persistCalls, 1, 'persist() must be requested once the first version commits');
+
+  await store.commitVersion(note.id);
+  const rev2 = store.saveDraft(note.id, 'text 2');
+  await store.flush(note.id, rev2);
+  await store.commitVersion(note.id);
+  assertEquals(persistCalls, 1, 'persist() must only ever be requested once per session');
+
+  navigator.storage.persist = originalPersist;
+  await store.close();
+});

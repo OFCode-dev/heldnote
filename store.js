@@ -4,6 +4,7 @@ import { LIMITS } from './constants.js';
 let conn = null;
 let listeners = new Set();
 let memoryFallback = null;
+let persistRequested = false;
 
 function emit(event) {
   for (const handler of listeners) {
@@ -63,6 +64,15 @@ export async function close() {
   lastVersionText.clear();
   memoryOnlyText.clear();
   versionCommitsStopped = false;
+  persistRequested = false;
+}
+
+async function requestPersistenceOnce() {
+  if (persistRequested) return;
+  persistRequested = true;
+  if (!navigator.storage || !navigator.storage.persist) return;
+  const granted = await navigator.storage.persist().catch(() => false);
+  emit({ type: 'retention-changed', retention: granted ? 'persistent' : 'best-effort' });
 }
 
 function newId() {
@@ -514,6 +524,7 @@ export async function commitVersion(id) {
     }
 
     lastVersionText.set(id, draft.text);
+    await requestPersistenceOnce();
     return { seq, at, sourceRev: draft.localRev, size: byteLength };
   } finally {
     // Released whether the write succeeded or threw, same discipline as
