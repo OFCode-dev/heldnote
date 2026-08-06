@@ -1,4 +1,4 @@
-import { test, assert, assertEquals } from './test-harness.js';
+import { test, assert, assertEquals, withTimeout } from './test-harness.js';
 import { openDb } from '../db.js';
 
 test('harness sanity', () => {
@@ -25,5 +25,31 @@ test('openDb creates all four stores with the right indexes', async () => {
   assertEquals(Array.from(versions.indexNames).sort(), ['by_note_at']);
 
   db.close();
+  indexedDB.deleteDatabase(name);
+});
+
+test('openDb resolves version-error when the requested version is older than the stored one', async () => {
+  const name = freshDbName();
+  const first = await openDb({ name, version: 2 });
+  assert(first.outcome === 'ok');
+  first.db.close();
+
+  const second = await openDb({ name, version: 1 });
+  assert(second.outcome === 'version-error', `expected version-error, got ${second.outcome}`);
+
+  indexedDB.deleteDatabase(name);
+});
+
+test('openDb resolves blocked when an older connection is still open at a higher requested version, and that connection gets versionchange', async () => {
+  const name = freshDbName();
+  let versionChangeFired = false;
+  const first = await openDb({ name, version: 1, onVersionChange: () => { versionChangeFired = true; } });
+  assert(first.outcome === 'ok');
+
+  const second = await withTimeout(openDb({ name, version: 2 }), 2000, 'openDb({version:2}) never resolved blocked');
+  assert(second.outcome === 'blocked', `expected blocked, got ${second.outcome}`);
+  assert(versionChangeFired, 'expected the first connection to receive versionchange');
+
+  first.db.close();
   indexedDB.deleteDatabase(name);
 });
