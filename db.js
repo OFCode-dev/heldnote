@@ -62,3 +62,49 @@ export function requestToPromise(req) {
     req.onerror = () => reject(req.error);
   });
 }
+
+let fault = null;
+
+export function setFaultInjection(config = {}) {
+  fault = config;
+}
+
+export function clearFaultInjection() {
+  fault = null;
+}
+
+export function openTransaction(db, storeNames, mode, { durability } = {}) {
+  const opts = {};
+  if (mode === 'readwrite' && durability) opts.durability = durability;
+  const tx = db.transaction(storeNames, mode, opts);
+
+  if (fault && fault.quotaOnStore && storeNames.includes(fault.quotaOnStore)) {
+    queueMicrotask(() => {
+      try { tx.abort(); } catch (_e) { /* already settling */ }
+    });
+  }
+
+  return tx;
+}
+
+export function awaitTransactionComplete(tx) {
+  return new Promise((resolve, reject) => {
+    tx.addEventListener('complete', () => {
+      if (fault && fault.delayCompleteMs) {
+        setTimeout(resolve, fault.delayCompleteMs);
+      } else {
+        resolve();
+      }
+    });
+    tx.addEventListener('error', () => reject(tx.error));
+    tx.addEventListener('abort', () => reject(tx.error || new DOMException('Transaction aborted', 'AbortError')));
+  });
+}
+
+export function markRequestSuccessForAbortFault(tx) {
+  if (fault && fault.abortAfterRequestSuccess) {
+    queueMicrotask(() => {
+      try { tx.abort(); } catch (_e) { /* already settling */ }
+    });
+  }
+}

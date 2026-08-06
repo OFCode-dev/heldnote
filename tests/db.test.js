@@ -1,5 +1,5 @@
 import { test, assert, assertEquals, withTimeout } from './test-harness.js';
-import { openDb } from '../db.js';
+import { openDb, setFaultInjection, clearFaultInjection, openTransaction, awaitTransactionComplete, markRequestSuccessForAbortFault } from '../db.js';
 
 test('harness sanity', () => {
   assert(1 + 1 === 2, 'math is broken');
@@ -51,5 +51,61 @@ test('openDb resolves blocked when an older connection is still open at a higher
   assert(versionChangeFired, 'expected the first connection to receive versionchange');
 
   first.db.close();
+  indexedDB.deleteDatabase(name);
+});
+
+test('fault injection: quotaOnStore aborts the transaction', async () => {
+  const name = freshDbName();
+  const { db } = await openDb({ name });
+  setFaultInjection({ quotaOnStore: 'drafts' });
+
+  const tx = openTransaction(db, ['drafts'], 'readwrite');
+  tx.objectStore('drafts').put({ noteId: 'n1', text: 'x', localRev: 1, savedAt: Date.now(), byteLength: 1 });
+  let rejected = false;
+  await awaitTransactionComplete(tx).catch(() => { rejected = true; });
+  assert(rejected, 'expected the transaction to abort under the quota fault');
+
+  clearFaultInjection();
+  db.close();
+  indexedDB.deleteDatabase(name);
+});
+
+test('fault injection: delayCompleteMs delays transaction completion as observed by awaitTransactionComplete', async () => {
+  const name = freshDbName();
+  const { db } = await openDb({ name });
+  setFaultInjection({ delayCompleteMs: 150 });
+
+  const tx = openTransaction(db, ['meta'], 'readwrite');
+  tx.objectStore('meta').put({ key: 'x', value: 1 });
+  const start = Date.now();
+  await awaitTransactionComplete(tx);
+  const elapsed = Date.now() - start;
+  assert(elapsed >= 150, `expected >=150ms delay, got ${elapsed}ms`);
+
+  clearFaultInjection();
+  db.close();
+  indexedDB.deleteDatabase(name);
+});
+
+test('fault injection: abortAfterRequestSuccess aborts the transaction right after a request succeeds', async () => {
+  const name = freshDbName();
+  const { db } = await openDb({ name });
+  setFaultInjection({ abortAfterRequestSuccess: true });
+
+  const tx = openTransaction(db, ['meta'], 'readwrite');
+  const req = tx.objectStore('meta').put({ key: 'y', value: 1 });
+  let requestSucceeded = false;
+  req.onsuccess = () => {
+    requestSucceeded = true;
+    markRequestSuccessForAbortFault(tx);
+  };
+
+  let rejected = false;
+  await awaitTransactionComplete(tx).catch(() => { rejected = true; });
+  assert(requestSucceeded, 'expected the individual put() request to succeed first');
+  assert(rejected, 'expected the transaction to still abort after the request succeeded');
+
+  clearFaultInjection();
+  db.close();
   indexedDB.deleteDatabase(name);
 });
