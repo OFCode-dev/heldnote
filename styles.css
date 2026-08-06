@@ -62,6 +62,8 @@ body { margin: 0; background: var(--bg); color: var(--text); font-family: system
 #status-revision.state-failed { color: var(--coral-500); }
 #status-retention.state-warning { color: var(--amber-500); }
 #status-retention.state-info { color: var(--blue-500); }
+#status-notice.state-warning { color: var(--amber-500); }
+#status-notice[hidden] { display: none; }
 
 button {
   border-radius: var(--radius-control);
