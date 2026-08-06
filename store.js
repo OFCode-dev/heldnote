@@ -907,9 +907,11 @@ export async function releaseNoteLock(id) {
 // export immediately after typing reflects the latest text rather than
 // whatever was last durable. importAll validates schemaVersion/shape entirely
 // before touching anything (parseImportFile runs before withGlobalLock is even
-// requested), so a malformed file changes nothing. exportAll and both of
-// importAll's modes hold withGlobalLock (Task 10/12), like runMaintenance,
-// since all three touch every store: without it, a concurrent replace-mode
+// requested), so a malformed file changes nothing. Both of importAll's modes,
+// and exportAll's read-and-build phase (but NOT its flush-wait phase — see
+// the comment on exportAll itself for why that split is load-bearing, not
+// stylistic), hold withGlobalLock (Task 10/12), like runMaintenance, since
+// all three touch every store: without it, a concurrent replace-mode
 // importAll could commit mid-export, and getNote() would throw not-found for
 // a note the import just deleted out from under exportAll's loop (or, if a
 // note id happens to be reused, the export could silently mix pre-/post-
@@ -953,20 +955,40 @@ export async function releaseNoteLock(id) {
 const SCHEMA_VERSION = 1;
 
 export async function exportAll() {
-  // Without this lock, a concurrent replace-mode importAll can commit mid-
-  // export: getNote() would throw not-found for a note the import just
-  // deleted (uncaught here, crashing the export), or — if a note id happens
-  // to be reused — the export could silently mix pre-/post-import fields
-  // into one file it reports as a successful backup. importAll and
-  // runMaintenance already hold this same lock for the same reason (they
-  // touch every store); exportAll reads every store too, so it needs the
-  // same exclusion.
+  // Two phases, deliberately split across the lock boundary.
+  //
+  // Phase 1 (unlocked): flush every note with a pending revision, so the
+  // export reflects the latest typed text. This CANNOT run inside
+  // withGlobalLock: a flush() here waits on a draft write that, on a quota
+  // fault, retries via runMaintenance() — which itself requests this same
+  // 'heldnote-global' lock. Web Locks has no reentrancy: if exportAll were
+  // already holding the lock while awaiting that flush(), the retry's
+  // runMaintenance() call would queue behind exportAll's own hold, which is
+  // itself waiting on that same retry to finish — a permanent deadlock, and
+  // anything else queued on the lock (e.g. a subsequent importAll) hangs
+  // behind it too. Running the flush loop before ever requesting the lock
+  // means exportAll is never simultaneously holding it and blocked on a
+  // promise that needs it.
+  //
+  // Phase 2 (locked): the read-and-build phase (getNote/listVersions/
+  // getVersion/Blob construction) is what the original Critical finding was
+  // actually about — a concurrent replace-mode importAll committing mid-read
+  // would throw not-found for a note it just deleted, or mix pre-/post-import
+  // fields into one file reported as a successful backup. importAll holds
+  // this same lock for its entire write, so serializing just this phase
+  // against it is sufficient, and re-fetching noteSummaries fresh INSIDE the
+  // lock (rather than reusing phase 1's list) means this phase always reads
+  // one consistent state — either fully pre-import or fully post-import,
+  // never a stale summary list pointing at notes an import deleted during
+  // the (unlocked) phase 1 flush-wait.
+  const pendingSummaries = await listNotes({ includeTrashed: true, limit: 100000 });
+  for (const summary of pendingSummaries) {
+    const rev = revCounters.get(summary.id);
+    if (rev) await flush(summary.id, rev).catch(() => {});
+  }
+
   return withGlobalLock(async () => {
     const noteSummaries = await listNotes({ includeTrashed: true, limit: 100000 });
-    for (const summary of noteSummaries) {
-      const rev = revCounters.get(summary.id);
-      if (rev) await flush(summary.id, rev).catch(() => {});
-    }
 
     const notes = [];
     for (const summary of noteSummaries) {
