@@ -1,0 +1,10 @@
+{
+  "name": "Heldnote",
+  "short_name": "Heldnote",
+  "description": "Local-first notes with version history",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0E1116",
+  "theme_color": "#0E1116",
+  "icons": []
+}

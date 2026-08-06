@@ -27,6 +27,19 @@ started yet.
 - Turkish and English UI, following the browser's language
 - JSON export and import as a full backup
 
+## Deployment
+
+**Canonical production origin:** `https://heldnote.app`
+
+- `www.heldnote.app` redirects to the apex domain.
+- All user data is persisted locally via IndexedDB; no data migration is required
+  if the origin changes, but any such change is an explicit export/import
+  migration decision, never a silent move.
+- **Release smoke test:** Before each production deploy, open
+  `https://heldnote.app` in a private/incognito window to verify the app loads
+  and can access the local database (this confirms no silent breakage in storage
+  access or IndexedDB permission changes).
+
 ## Not in v1
 
 Google Drive sync, writing straight to disk, tags and folders, markdown preview,
