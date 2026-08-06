@@ -61,6 +61,8 @@ export async function close() {
   revCounters.clear();
   durableRevs.clear();
   lastVersionText.clear();
+  memoryOnlyText.clear();
+  versionCommitsStopped = false;
 }
 
 function newId() {
@@ -215,6 +217,40 @@ export async function purgeNote(id) {
 
 const draftQueues = new Map(); // noteId -> { pendingText, pendingRev, inFlight, waiters, lastFailure }
 
+// --- quota exhaustion: prune-retry-once, then degrade -----------------------
+//
+// A quota-class error (QuotaExceededError, or the AbortError the fault-
+// injection seam produces) gets exactly one prune-and-retry before this code
+// gives up on the attempt in front of it. The two call sites degrade
+// differently because the two failures mean different things:
+//
+//   - the DRAFT path is the one that must never silently stop working, so a
+//     draft write that still fails after prune-and-retry goes memory-only for
+//     that note: the in-memory buffer (memoryOnlyText) keeps the text
+//     available for copy/export, ordinary 'saved' events stop, and a
+//     'memory-only' event fires instead.
+//   - the VERSION-COMMIT path is expendable: drafts must keep saving even
+//     after history stops. A version write that still fails after retry sets
+//     versionCommitsStopped so no further commitVersion() call even attempts
+//     a write (it returns null immediately), and a 'quota-warning' fires once
+//     at the moment history commits stop.
+//
+// memoryOnlyText is connection-scoped like durableRevs etc. and is cleared in
+// close(); versionCommitsStopped is a whole-connection latch (once history
+// commits are known to be unsalvageable for the current storage pressure,
+// there is no per-note distinction worth making) and is reset in close() too.
+
+const memoryOnlyText = new Map(); // noteId -> last text that could not be made durable
+let versionCommitsStopped = false;
+
+export function getMemoryOnlyText(noteId) {
+  return memoryOnlyText.get(noteId);
+}
+
+function isQuotaError(error) {
+  return Boolean(error) && (error.name === 'QuotaExceededError' || error.name === 'AbortError');
+}
+
 function queueFor(noteId) {
   let q = draftQueues.get(noteId);
   if (!q) {
@@ -336,11 +372,57 @@ async function runDraftWrite(noteId) {
       // durableRevs is what flush() trusts to answer "already on disk".
       const durableRev = Math.max(durableRevs.get(noteId) || 0, rev);
       durableRevs.set(noteId, durableRev);
+      memoryOnlyText.delete(noteId);
       receipt = { noteId, requestedRev: rev, durableRev, completedAt: Date.now() };
       emit({ type: 'saved', ...receipt });
     } catch (error) {
-      receipt = { noteId, requestedRev: rev, durableRev: durableRevs.get(noteId) || 0, completedAt: Date.now(), error };
-      emit({ type: 'save-failed', ...receipt });
+      if (isQuotaError(error)) {
+        // One prune-and-retry, then the note this text belongs to goes
+        // memory-only rather than looping forever against storage that is
+        // still full.
+        await runMaintenance().catch(() => {});
+        if (currentGeneration(noteId) !== generationAtQueue) {
+          // A restore won the note while maintenance ran. That is a
+          // supersession, not a quota failure: the restore's text is what is
+          // now current, so this stale payload must not overwrite it, and it
+          // must not be reported memory-only either (memory-only exists to
+          // preserve text that is otherwise about to be lost, and this text
+          // is not — the restore's checkpoint already preserved it). Falls
+          // through to the same save-failed reporting the generation fence
+          // uses on the first attempt.
+          receipt = { noteId, requestedRev: rev, durableRev: durableRevs.get(noteId) || 0, completedAt: Date.now(), error };
+          emit({ type: 'save-failed', ...receipt });
+        } else {
+          try {
+            // Recomputed rather than reused: byteLength/title above are
+            // scoped to the outer try block and are not visible here.
+            const retryByteLength = new TextEncoder().encode(text).length;
+            const retryTitle = deriveTitle(text);
+            const retryTx = openTransaction(conn, ['notes', 'drafts'], 'readwrite', { durability: 'strict' });
+            retryTx.objectStore('drafts').put({ noteId, text, localRev: rev, savedAt: now, byteLength: retryByteLength });
+            const retryNoteStore = retryTx.objectStore('notes');
+            const retryNoteRecord = await requestToPromise(retryNoteStore.get(noteId));
+            retryNoteRecord.title = retryTitle;
+            retryNoteRecord.updatedAt = now;
+            retryNoteRecord.localRev = rev;
+            retryNoteStore.put(retryNoteRecord);
+            await awaitTransactionComplete(retryTx);
+
+            const durableRev = Math.max(durableRevs.get(noteId) || 0, rev);
+            durableRevs.set(noteId, durableRev);
+            memoryOnlyText.delete(noteId);
+            receipt = { noteId, requestedRev: rev, durableRev, completedAt: Date.now() };
+            emit({ type: 'saved', ...receipt });
+          } catch (retryError) {
+            memoryOnlyText.set(noteId, text);
+            receipt = { noteId, requestedRev: rev, durableRev: durableRevs.get(noteId) || 0, completedAt: Date.now(), error: retryError };
+            emit({ type: 'memory-only', noteId, text });
+          }
+        }
+      } else {
+        receipt = { noteId, requestedRev: rev, durableRev: durableRevs.get(noteId) || 0, completedAt: Date.now(), error };
+        emit({ type: 'save-failed', ...receipt });
+      }
     }
 
     resolveWaiters(noteId, receipt);
@@ -368,6 +450,11 @@ export async function commitVersion(id) {
   // null instead of throwing: commitVersion is polled routinely by an idle
   // timer (Task 18) and null already means "nothing to commit right now".
   if (q.restoring) return null;
+  // Once a version write has failed a prune-and-retry, history commits are
+  // considered permanently unsalvageable for this connection: draft writes
+  // must keep working, but there is no point contending for the lock or
+  // hitting storage again on every subsequent commitVersion() call.
+  if (versionCommitsStopped) return null;
 
   const currentRev = revCounters.get(id) || 0;
   if (currentRev > 0) {
@@ -391,13 +478,40 @@ export async function commitVersion(id) {
   if (q.restoring) return null;
   q.restoring = true;
   try {
-    const seq = await nextSeq(id);
-    const at = Date.now();
-    const byteLength = new TextEncoder().encode(draft.text).length;
-
-    const writeTx = openTransaction(conn, ['versions'], 'readwrite', { durability: 'strict' });
-    writeTx.objectStore('versions').put({ noteId: id, seq, at, sourceRev: draft.localRev, text: draft.text, byteLength });
-    await awaitTransactionComplete(writeTx);
+    // nextSeq() also opens a transaction scoped to 'versions', so it is
+    // exposed to exactly the same fault (real quota pressure or the
+    // fault-injection seam) as the write below — a quota-class failure can
+    // surface there just as easily as on the put() itself. Both are folded
+    // into one prune-and-retry-once attempt: on failure, anything already
+    // computed (seq/at/byteLength) is stale relative to the post-prune state,
+    // so the retry recomputes them rather than reusing values from a
+    // transaction that never committed.
+    let seq;
+    let at;
+    let byteLength;
+    try {
+      seq = await nextSeq(id);
+      at = Date.now();
+      byteLength = new TextEncoder().encode(draft.text).length;
+      const writeTx = openTransaction(conn, ['versions'], 'readwrite', { durability: 'strict' });
+      writeTx.objectStore('versions').put({ noteId: id, seq, at, sourceRev: draft.localRev, text: draft.text, byteLength });
+      await awaitTransactionComplete(writeTx);
+    } catch (error) {
+      if (!isQuotaError(error)) throw error;
+      await runMaintenance().catch(() => {});
+      try {
+        seq = await nextSeq(id);
+        at = Date.now();
+        byteLength = new TextEncoder().encode(draft.text).length;
+        const retryTx = openTransaction(conn, ['versions'], 'readwrite', { durability: 'strict' });
+        retryTx.objectStore('versions').put({ noteId: id, seq, at, sourceRev: draft.localRev, text: draft.text, byteLength });
+        await awaitTransactionComplete(retryTx);
+      } catch (retryError) {
+        versionCommitsStopped = true;
+        emit({ type: 'quota-warning', noteId: id, reason: 'version-commits-stopped' });
+        return null;
+      }
+    }
 
     lastVersionText.set(id, draft.text);
     return { seq, at, sourceRev: draft.localRev, size: byteLength };

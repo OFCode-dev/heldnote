@@ -330,3 +330,50 @@ test('commitVersion returns null (does not race) while a restoreVersion write is
 
   await store.close();
 });
+
+// --- Task 11: quota exhaustion handling -------------------------------------
+//
+// setFaultInjection({ quotaOnStore }) aborts every transaction touching that
+// store (db.js), which surfaces as an AbortError — isQuotaError() treats that
+// the same as QuotaExceededError. The fault stays active until
+// clearFaultInjection() is called, so the prune-and-retry's single retry also
+// fails, which is what drives both paths to their final, non-retrying state.
+
+test('a version commit that fails on quota prunes, retries once, then stops committing history', async () => {
+  await store.open({ dbName: `heldnote-test-${Date.now()}` });
+  const note = await store.createNote();
+  const rev = store.saveDraft(note.id, 'v1');
+  await store.flush(note.id, rev);
+  await store.commitVersion(note.id);
+
+  const events = [];
+  store.subscribe((e) => events.push(e));
+
+  setFaultInjection({ quotaOnStore: 'versions' });
+  store.saveDraft(note.id, 'v2');
+  const result = await store.commitVersion(note.id);
+  clearFaultInjection();
+
+  assertEquals(result, null, 'a version commit that cannot be persisted after retry must not report a fake success');
+  assert(events.some((e) => e.type === 'quota-warning'), 'expected a quota-warning event once history commits stop');
+
+  await store.close();
+});
+
+test('a draft write that fails on quota after pruning and retry enters memory-only, keeping the visible buffer', async () => {
+  await store.open({ dbName: `heldnote-test-${Date.now()}` });
+  const note = await store.createNote();
+
+  const events = [];
+  store.subscribe((e) => events.push(e));
+
+  setFaultInjection({ quotaOnStore: 'drafts' });
+  const rev = store.saveDraft(note.id, 'will not persist');
+  await store.flush(note.id, rev).catch(() => {});
+  clearFaultInjection();
+
+  assert(events.some((e) => e.type === 'memory-only'), 'expected a memory-only event');
+  assertEquals(store.getMemoryOnlyText(note.id), 'will not persist', 'the visible buffer must be retained for emergency export');
+
+  await store.close();
+});
