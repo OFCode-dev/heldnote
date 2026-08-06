@@ -56,6 +56,42 @@ test('createNote, listNotes, setPinned, trashNote, restoreNote, purgeNote round-
   await store.close();
 });
 
+test('listNotes query matches title OR body text, case-insensitively, and still excludes trashed notes by default', async () => {
+  await store.open({ dbName: `heldnote-test-${Date.now()}` });
+
+  // Title carries the query; body does not.
+  const titleMatch = await store.createNote();
+  let rev = store.saveDraft(titleMatch.id, 'Zephyr notes\nsome body text');
+  await store.flush(titleMatch.id, rev);
+
+  // Body carries the query; title (first line) does not.
+  const bodyMatch = await store.createNote();
+  rev = store.saveDraft(bodyMatch.id, 'Grocery list\nremember to buy a ZEPHYR fan');
+  await store.flush(bodyMatch.id, rev);
+
+  // Neither title nor body carries the query.
+  const noMatch = await store.createNote();
+  rev = store.saveDraft(noMatch.id, 'Unrelated\nnothing interesting here');
+  await store.flush(noMatch.id, rev);
+
+  const results = await store.listNotes({ query: 'zephyr' });
+  const ids = results.map((n) => n.id).sort();
+  assertEquals(ids.length, 2, 'expected both the title-match and body-match notes, but not the non-match');
+  assertEquals(JSON.stringify(ids), JSON.stringify([titleMatch.id, bodyMatch.id].sort()));
+
+  // A trashed note whose body matches must still be excluded by default —
+  // the search-scope widening must not interact with the trashed filter.
+  await store.trashNote(bodyMatch.id);
+  const afterTrash = await store.listNotes({ query: 'zephyr' });
+  assertEquals(afterTrash.length, 1);
+  assertEquals(afterTrash[0].id, titleMatch.id);
+
+  const includeTrashedResults = await store.listNotes({ query: 'zephyr', includeTrashed: true });
+  assertEquals(includeTrashedResults.length, 2, 'includeTrashed should still surface the trashed body-match note');
+
+  await store.close();
+});
+
 test('a note whose text is entirely empty is titled Untitled and still appears in the list', async () => {
   await store.open({ dbName: `heldnote-test-${Date.now()}` });
   const note = await store.createNote();

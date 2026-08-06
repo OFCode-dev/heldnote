@@ -112,19 +112,44 @@ export async function createNote() {
 }
 
 export async function listNotes({ query, includeTrashed = false, limit, before } = {}) {
-  const tx = openTransaction(conn, ['notes'], 'readonly');
+  const tx = openTransaction(conn, ['notes', 'drafts'], 'readonly');
   const notesStore = tx.objectStore('notes');
+  const draftsStore = tx.objectStore('drafts');
   const results = [];
+  const lowerQuery = query ? query.toLowerCase() : null;
 
   await new Promise((resolve, reject) => {
     const req = notesStore.openCursor();
-    req.onsuccess = () => {
+    req.onsuccess = async () => {
       const cursor = req.result;
       if (!cursor) { resolve(); return; }
       const record = cursor.value;
       const isTrashed = record.isDeleted === 1;
-      const matchesQuery = !query || record.title.toLowerCase().includes(query.toLowerCase());
-      if ((includeTrashed || !isTrashed) && matchesQuery) {
+      if (!includeTrashed && isTrashed) {
+        cursor.continue();
+        return;
+      }
+
+      // Matching covers title AND body text (PRD requirement). The title
+      // check is free (already in hand from the cursor); only fall through to
+      // a second store read of the draft's body when the title alone doesn't
+      // satisfy the query, so a title match never pays for a drafts lookup.
+      let matchesQuery = !lowerQuery || record.title.toLowerCase().includes(lowerQuery);
+      if (!matchesQuery) {
+        // Explicit try/catch: this handler is async, so a rejection from the
+        // awaited request would otherwise become an unhandled rejection
+        // instead of reaching the surrounding Promise's reject() — leaving
+        // listNotes()'s own await pending forever instead of failing loudly.
+        try {
+          const draftRecord = await requestToPromise(draftsStore.get(record.id));
+          matchesQuery = !!draftRecord && draftRecord.text.toLowerCase().includes(lowerQuery);
+        } catch (error) {
+          reject(error);
+          return;
+        }
+      }
+
+      if (matchesQuery) {
         results.push(toNoteSummary(record));
       }
       cursor.continue();
