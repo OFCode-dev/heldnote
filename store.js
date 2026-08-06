@@ -722,6 +722,20 @@ async function runRestore(id, target, currentRev) {
   await awaitTransactionComplete(tx);
 
   durableRevs.set(id, Math.max(durableRevs.get(id) || 0, nextRev));
+  // Drain any flush() waiters this restore's own durability now covers. This
+  // mirrors what every successful runDraftWrite write already does via
+  // resolveWaiters(), and closes a real hang: a flush(id, rev) call that
+  // registered a waiter during this restore's async window (missing the fast
+  // path because durableRevs hadn't been updated yet) would otherwise sit
+  // unresolved until some unrelated later draft write happened to drain it —
+  // or forever, if none ever comes. Safe by construction: resolveWaiters only
+  // settles waiters whose rev <= durableRev, so a waiter for a revision
+  // higher than nextRev (queued during the restore, correctly deferred by
+  // the generation fence, not yet actually written) is left untouched here —
+  // it stays pending until its own real write completes and calls
+  // resolveWaiters normally, via the deferred write this function's caller
+  // (restoreVersion's finally) starts once the lock is released.
+  resolveWaiters(id, { noteId: id, requestedRev: nextRev, durableRev: durableRevs.get(id), completedAt: at });
   lastVersionText.set(id, target.text);
   emit({ type: 'note-changed', noteId: id });
 
@@ -893,9 +907,13 @@ export async function releaseNoteLock(id) {
 // export immediately after typing reflects the latest text rather than
 // whatever was last durable. importAll validates schemaVersion/shape entirely
 // before touching anything (parseImportFile runs before withGlobalLock is even
-// requested), so a malformed file changes nothing. Both modes hold
-// withGlobalLock (Task 10/12) since, like runMaintenance, they touch every
-// store.
+// requested), so a malformed file changes nothing. exportAll and both of
+// importAll's modes hold withGlobalLock (Task 10/12), like runMaintenance,
+// since all three touch every store: without it, a concurrent replace-mode
+// importAll could commit mid-export, and getNote() would throw not-found for
+// a note the import just deleted out from under exportAll's loop (or, if a
+// note id happens to be reused, the export could silently mix pre-/post-
+// import fields into one file it reports as a successful backup).
 //
 // The part that isn't in the brief this was written against: keeping the
 // per-note in-memory bookkeeping built up over Tasks 6-11 (revCounters,
@@ -935,27 +953,37 @@ export async function releaseNoteLock(id) {
 const SCHEMA_VERSION = 1;
 
 export async function exportAll() {
-  const noteSummaries = await listNotes({ includeTrashed: true, limit: 100000 });
-  for (const summary of noteSummaries) {
-    const rev = revCounters.get(summary.id);
-    if (rev) await flush(summary.id, rev).catch(() => {});
-  }
-
-  const notes = [];
-  for (const summary of noteSummaries) {
-    notes.push(await getNote(summary.id));
-  }
-
-  const versions = [];
-  for (const summary of noteSummaries) {
-    const infos = await listVersions(summary.id, {});
-    for (const info of infos) {
-      versions.push({ noteId: summary.id, ...(await getVersion(summary.id, info.seq)) });
+  // Without this lock, a concurrent replace-mode importAll can commit mid-
+  // export: getNote() would throw not-found for a note the import just
+  // deleted (uncaught here, crashing the export), or — if a note id happens
+  // to be reused — the export could silently mix pre-/post-import fields
+  // into one file it reports as a successful backup. importAll and
+  // runMaintenance already hold this same lock for the same reason (they
+  // touch every store); exportAll reads every store too, so it needs the
+  // same exclusion.
+  return withGlobalLock(async () => {
+    const noteSummaries = await listNotes({ includeTrashed: true, limit: 100000 });
+    for (const summary of noteSummaries) {
+      const rev = revCounters.get(summary.id);
+      if (rev) await flush(summary.id, rev).catch(() => {});
     }
-  }
 
-  const payload = { schemaVersion: SCHEMA_VERSION, exportedAt: Date.now(), notes, versions };
-  return new Blob([JSON.stringify(payload)], { type: 'application/json' });
+    const notes = [];
+    for (const summary of noteSummaries) {
+      notes.push(await getNote(summary.id));
+    }
+
+    const versions = [];
+    for (const summary of noteSummaries) {
+      const infos = await listVersions(summary.id, {});
+      for (const info of infos) {
+        versions.push({ noteId: summary.id, ...(await getVersion(summary.id, info.seq)) });
+      }
+    }
+
+    const payload = { schemaVersion: SCHEMA_VERSION, exportedAt: Date.now(), notes, versions };
+    return new Blob([JSON.stringify(payload)], { type: 'application/json' });
+  });
 }
 
 async function parseImportFile(file) {
@@ -1028,6 +1056,24 @@ export async function importAll(file, { mode }) {
         tx.objectStore('versions').put({ noteId: v.noteId, seq: v.seq, at: v.at, sourceRev: v.sourceRev, text: v.text, byteLength: new TextEncoder().encode(v.text).length });
       }
       await awaitTransactionComplete(tx);
+
+      // A draft write genuinely in flight for some note id right now has its
+      // own waiters sitting in that note's *current* draftQueues entry.
+      // draftQueues.clear() below discards that entry outright; whenever that
+      // in-flight write eventually settles, its own resolveWaiters() call
+      // re-fetches the queue via queueFor(), which after a clear() returns a
+      // brand-new, empty queue object — not the one those waiters were
+      // pushed onto. Left alone, those waiters would never resolve or
+      // reject. Reject them now, before the entry describing them is thrown
+      // away: requestedRev: Infinity + durableRev: -Infinity forces every
+      // waiter in resolveWaiters' loop into the reject branch, regardless of
+      // what revision it was waiting for.
+      for (const [staleNoteId, staleQueue] of draftQueues) {
+        if (staleQueue.waiters.length > 0) {
+          const error = Object.assign(new Error('note was replaced by an import before this write could complete'), { code: 'import-replaced' });
+          resolveWaiters(staleNoteId, { noteId: staleNoteId, requestedRev: Infinity, durableRev: -Infinity, completedAt: Date.now(), error });
+        }
+      }
 
       // Every note/draft/version that existed before this transaction is gone
       // now, except whatever id happens to be reused by the import, so every
