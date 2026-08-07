@@ -1,6 +1,7 @@
 import { test, assert, assertEquals, withTimeout } from './test-harness.js';
 import * as store from '../store.js';
 import { setFaultInjection, clearFaultInjection } from '../db.js';
+import { LIMITS } from '../constants.js';
 
 test('open() resolves available:true against a fresh database', async () => {
   const status = await store.open({ dbName: `heldnote-test-${Date.now()}` });
@@ -753,6 +754,335 @@ test('persist() is requested only after the first version commit, not before', a
 
   navigator.storage.persist = originalPersist;
   await store.close();
+});
+
+// --- storage unavailable: the in-memory fallback ----------------------------
+//
+// setFaultInjection({ openOutcome }) makes openDb report an outcome other than
+// 'ok' without touching the real IndexedDB implementation, which is the only
+// way to reach the path a blocked/corrupt/disabled store takes. Every test here
+// clears the fault immediately after open() so nothing else in the suite runs
+// against a poisoned opener.
+
+async function openInMemoryMode(outcome = 'unavailable') {
+  setFaultInjection({ openOutcome: outcome });
+  try {
+    return await store.open({ dbName: `heldnote-test-${Date.now()}` });
+  } finally {
+    clearFaultInjection();
+  }
+}
+
+test('open() resolves available:false with a reason (never rejects) when storage cannot be opened', async () => {
+  const events = [];
+  const unsubscribe = store.subscribe((e) => events.push(e));
+
+  const status = await openInMemoryMode('corrupt');
+  assertEquals(status.available, false);
+  assertEquals(status.reason, 'corrupt');
+  assertEquals(status.schemaVersion, 1);
+  assert(events.some((e) => e.type === 'storage-unavailable' && e.reason === 'corrupt'), 'expected a storage-unavailable event carrying the reason');
+
+  unsubscribe();
+  await store.close();
+});
+
+test('a memory session survives a later successful open(): notes are migrated to disk, not stranded', async () => {
+  const dbName = `heldnote-test-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
+  // First open fails, so everything typed here lives only in the memory session.
+  setFaultInjection({ openOutcome: 'unavailable' });
+  let status;
+  try {
+    status = await store.open({ dbName });
+  } finally {
+    clearFaultInjection();
+  }
+  assertEquals(status.available, false);
+
+  const note = await store.createNote();
+  const rev = store.saveDraft(note.id, 'typed while storage was down');
+  await store.flush(note.id, rev);
+  await store.commitVersion(note.id);
+
+  // Storage comes back. The second open must migrate that text rather than
+  // leaving memory mode latched on (which would ignore the live connection) or
+  // clearing it (which would drop the note entirely).
+  const reopened = await store.open({ dbName });
+  assertEquals(reopened.available, true, 'expected the second open to report working storage');
+
+  const migrated = await store.getNote(note.id);
+  assertEquals(migrated.text, 'typed while storage was down', 'the memory session note must survive the migration');
+
+  const list = await store.listNotes({});
+  assertEquals(list.length, 1);
+  assertEquals(list[0].id, note.id);
+
+  // Its history came across too, and the note is genuinely on disk now: a
+  // further write goes through the persisted path and reads back.
+  const versions = await store.listVersions(note.id, {});
+  assert(versions.length >= 1, 'expected the memory session version history to be migrated');
+
+  const rev2 = store.saveDraft(note.id, 'typed after storage came back');
+  await store.flush(note.id, rev2);
+  assertEquals((await store.getNote(note.id)).text, 'typed after storage came back');
+
+  await store.close();
+  indexedDB.deleteDatabase(dbName);
+});
+
+test('memory mode: create a note, type into it, and read it back — the whole core flow works with no storage', async () => {
+  await openInMemoryMode('blocked');
+
+  const note = await store.createNote();
+  assert(typeof note.id === 'string' && note.id.length > 0, 'expected a generated id');
+  assertEquals(note.title, 'Untitled');
+  assertEquals(note.pinned, false);
+  assertEquals(note.deletedAt, null);
+
+  // saveDraft is still synchronous and still returns the assigned revision.
+  const rev = store.saveDraft(note.id, 'typed with no storage\nsecond line');
+  assert(rev > 0, 'expected an assigned revision');
+
+  // flush must resolve, not hang: in memory-only mode the write is already as
+  // durable as it can be.
+  const receipt = await withTimeout(store.flush(note.id, rev), 2000, 'flush hung in memory mode');
+  assertEquals(receipt.durableRev, rev);
+  assert(!receipt.error, 'expected no error from a memory-mode flush');
+
+  const reloaded = await store.getNote(note.id);
+  assertEquals(reloaded.text, 'typed with no storage\nsecond line');
+  assertEquals(reloaded.title, 'typed with no storage', 'the title must still be derived from the first line');
+  assertEquals(reloaded.localRev, rev);
+
+  const list = await store.listNotes({});
+  assertEquals(list.length, 1);
+  assertEquals(list[0].id, note.id);
+  assertEquals(list[0].title, 'typed with no storage');
+
+  await store.close();
+});
+
+test('memory mode: search covers title and body, and the trashed filter still applies', async () => {
+  await openInMemoryMode();
+
+  const titleMatch = await store.createNote();
+  store.saveDraft(titleMatch.id, 'Zephyr notes\nsome body text');
+  const bodyMatch = await store.createNote();
+  store.saveDraft(bodyMatch.id, 'Grocery list\nremember to buy a ZEPHYR fan');
+  const noMatch = await store.createNote();
+  store.saveDraft(noMatch.id, 'Unrelated\nnothing interesting here');
+
+  const results = await store.listNotes({ query: 'zephyr' });
+  assertEquals(results.length, 2, 'expected the title-match and the body-match, but not the non-match');
+
+  await store.trashNote(bodyMatch.id);
+  assertEquals((await store.listNotes({ query: 'zephyr' })).length, 1, 'a trashed note must be excluded by default');
+  assertEquals((await store.listNotes({ query: 'zephyr', includeTrashed: true })).length, 2);
+
+  await store.restoreNote(bodyMatch.id);
+  const restored = await store.listNotes({ includeTrashed: true });
+  assertEquals(restored.find((n) => n.id === bodyMatch.id).deletedAt, null, 'restore must clear deletedAt at the boundary');
+
+  await store.setPinned(noMatch.id, true);
+  assertEquals((await store.listNotes({}))[0].id, noMatch.id, 'a pinned note must sort first');
+
+  await store.purgeNote(noMatch.id);
+  assertEquals((await store.listNotes({ includeTrashed: true })).length, 2, 'a purged note must be gone from every view');
+
+  await store.close();
+});
+
+test('memory mode: exportAll carries this session‘s notes — the only way anything typed here leaves the tab', async () => {
+  await openInMemoryMode();
+
+  const note = await store.createNote();
+  const rev = store.saveDraft(note.id, 'rescue me');
+  await store.flush(note.id, rev);
+  await store.commitVersion(note.id);
+
+  const parsed = JSON.parse(await (await store.exportAll()).text());
+  assertEquals(parsed.schemaVersion, 1);
+  assertEquals(parsed.notes.length, 1);
+  assertEquals(parsed.notes[0].text, 'rescue me');
+  assertEquals(parsed.notes[0].id, note.id);
+  assertEquals(parsed.versions.length, 1);
+  assertEquals(parsed.versions[0].text, 'rescue me');
+  assert(Array.isArray(parsed.meta), 'export payload must always carry a meta array, memory mode included');
+
+  await store.close();
+});
+
+test('memory mode: version history commits, lists, reads back and restores', async () => {
+  await openInMemoryMode();
+  const note = await store.createNote();
+
+  let rev = store.saveDraft(note.id, 'first');
+  await store.flush(note.id, rev);
+  const v1 = await store.commitVersion(note.id);
+  assertEquals(v1.seq, 1);
+  assertEquals(await store.commitVersion(note.id), null, 'unchanged text must not commit a duplicate version');
+
+  rev = store.saveDraft(note.id, 'second');
+  await store.flush(note.id, rev);
+  await store.commitVersion(note.id);
+
+  const versions = await store.listVersions(note.id, {});
+  assertEquals(versions.length, 2);
+  assert(versions[0].seq > versions[1].seq, 'expected newest-first ordering');
+  assert(versions.every((v) => v.text === undefined), 'VersionInfo must not carry text');
+  assertEquals((await store.getVersion(note.id, v1.seq)).text, 'first');
+
+  // An unversioned edit must survive a restore as a checkpoint, exactly as it
+  // does on the persisted path.
+  rev = store.saveDraft(note.id, 'unversioned edit');
+  await store.flush(note.id, rev);
+  await store.restoreVersion(note.id, v1.seq);
+
+  assertEquals((await store.getNote(note.id)).text, 'first', 'restore must apply the selected version text');
+  const after = await store.listVersions(note.id, {});
+  const texts = (await Promise.all(after.map((v) => store.getVersion(note.id, v.seq)))).map((v) => v.text);
+  assert(texts.includes('unversioned edit'), 'the unversioned edit must survive as a checkpoint version');
+  assert(after.length > versions.length, 'a restore must add versions, never remove them');
+
+  await store.close();
+});
+
+test('memory mode: saveDraft for a note that does not exist still never throws, and reports save-failed', async () => {
+  await openInMemoryMode();
+
+  const events = [];
+  store.subscribe((e) => events.push(e));
+
+  const rev = store.saveDraft('no-such-note', 'text for a ghost');
+  assert(typeof rev === 'number', 'saveDraft must return a revision even when it cannot store the text');
+
+  let code;
+  await store.flush('no-such-note', rev).catch((e) => { code = e.code; });
+  assertEquals(code, 'not-found', 'flush must reject rather than hang when the write could not happen');
+  assert(events.some((e) => e.type === 'save-failed'), 'expected a save-failed event');
+
+  await store.close();
+});
+
+test('memory mode: importAll round-trips an exported backup, and runMaintenance is a no-op', async () => {
+  await openInMemoryMode();
+
+  const payload = {
+    schemaVersion: 1,
+    notes: [{ id: 'n', title: 'imported', text: 'imported text', createdAt: 1, updatedAt: 1, pinned: false, deletedAt: null, localRev: 3 }],
+    versions: [{ noteId: 'n', seq: 1, at: 1000, sourceRev: 3, text: 'imported text' }],
+    meta: [{ key: 'theme', value: 'dark' }],
+  };
+  const result = await store.importAll(new File([JSON.stringify(payload)], 'backup.json'), { mode: 'replace' });
+  assertEquals(result.notesAdded, 1);
+  assertEquals((await store.getNote('n')).text, 'imported text');
+
+  // Seeding matters here for the same reason it does on the persisted path: an
+  // unseeded durableRev makes flush() for the imported revision hang forever.
+  const receipt = await withTimeout(store.flush('n', 3), 2000, 'flush hung for an imported revision');
+  assertEquals(receipt.durableRev, 3);
+
+  const reExported = JSON.parse(await (await store.exportAll()).text());
+  assertEquals(reExported.meta[0].value, 'dark', 'imported settings must survive into the next export');
+
+  assertEquals(await store.runMaintenance(), { pruned: 0, purged: 0 }, 'there is nothing to prune in memory');
+
+  await store.close();
+});
+
+test('a store call made after the connection is force-closed fails with a typed error, not a TypeError', async () => {
+  await store.open({ dbName: `heldnote-test-${Date.now()}` });
+  const note = await store.createNote();
+
+  // What db.js does when another tab upgrades the database: the connection is
+  // closed underneath us and onversionchange fires.
+  store.__simulateVersionChangeForTests();
+
+  let error;
+  await store.listNotes({}).catch((e) => { error = e; });
+  assertEquals(error && error.code, 'storage-unavailable', 'expected the documented StoreError code');
+
+  // The draft path must not throw at its caller either — it reports through
+  // the event stream, as always.
+  const events = [];
+  store.subscribe((e) => events.push(e));
+  const rev = store.saveDraft(note.id, 'typed after the connection died');
+  let flushCode;
+  await store.flush(note.id, rev).catch((e) => { flushCode = e.code; });
+  assertEquals(flushCode, 'storage-unavailable');
+  assert(events.some((e) => e.type === 'save-failed'), 'expected a save-failed event rather than a raw throw');
+
+  await store.close();
+});
+
+// --- the note size cap is enforced, not merely declared ---------------------
+
+test('a draft over MAX_NOTE_SIZE_BYTES is refused, kept in the visible buffer, and warned about', async () => {
+  await store.open({ dbName: `heldnote-test-${Date.now()}` });
+  const note = await store.createNote();
+
+  const events = [];
+  store.subscribe((e) => events.push(e));
+
+  const oversized = 'x'.repeat(LIMITS.MAX_NOTE_SIZE_BYTES + 1);
+  const rev = store.saveDraft(note.id, oversized);
+  let code;
+  await store.flush(note.id, rev).catch((e) => { code = e.code; });
+  assertEquals(code, 'note-too-large', 'an oversized note must not be reported as saved');
+
+  assert(events.some((e) => e.type === 'quota-warning' && e.reason === 'note-too-large'), 'expected a quota-warning naming the size cap');
+  assert(events.some((e) => e.type === 'memory-only'), 'expected the memory-only state, so the interface stops claiming to save');
+  assertEquals(store.getMemoryOnlyText(note.id), oversized, 'the text the user typed must never be lost or truncated');
+
+  // Nothing partial was written: the note still holds its pre-oversize text.
+  assertEquals((await store.getNote(note.id)).text, '', 'a refused write must leave the stored draft untouched');
+
+  // And the note keeps saving normally once the text is back under the cap.
+  const smallRev = store.saveDraft(note.id, 'back under the limit');
+  const receipt = await store.flush(note.id, smallRev);
+  assertEquals(receipt.durableRev, smallRev);
+  assertEquals((await store.getNote(note.id)).text, 'back under the limit');
+
+  await store.close();
+});
+
+// --- maintenance runs at startup, not only after a write has already failed -
+
+test('open() runs the pruning ladder at startup without any explicit runMaintenance() call', async () => {
+  const dbName = `heldnote-test-${Date.now()}`;
+  await store.open({ dbName });
+  const note = await store.createNote();
+
+  // 60 versions, all dated three days ago: the newest 50 are protected by
+  // count, none by age, and the remaining 10 share one UTC day — so a pruning
+  // pass thins them to one and exactly 9 records go.
+  const realNow = Date.now;
+  try {
+    const threeDaysAgo = realNow.call(Date) - 3 * 24 * 60 * 60 * 1000;
+    Date.now = () => threeDaysAgo;
+    for (let i = 0; i < 60; i += 1) {
+      const rev = store.saveDraft(note.id, `old-${i}`);
+      await store.flush(note.id, rev);
+      await store.commitVersion(note.id);
+    }
+  } finally {
+    Date.now = realNow;
+  }
+  assertEquals((await store.listVersions(note.id, {})).length, 60);
+  await store.close();
+
+  // Reopening is the only trigger: nothing below calls runMaintenance().
+  await store.open({ dbName });
+  let remaining = 60;
+  for (let i = 0; i < 80 && remaining === 60; i += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    remaining = (await store.listVersions(note.id, {})).length;
+  }
+  assertEquals(remaining, 51, 'startup maintenance must prune the day-thinnable versions on its own');
+
+  await store.close();
+  indexedDB.deleteDatabase(dbName);
 });
 
 // --- Task 15: i18n.js -------------------------------------------------------

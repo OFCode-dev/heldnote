@@ -3,6 +3,16 @@ const DB_VERSION = 1;
 
 export function openDb({ name = DEFAULT_DB_NAME, version = DB_VERSION, onVersionChange } = {}) {
   return new Promise((resolve) => {
+    // Test-only seam, same shape as the quota/abort faults below: force the
+    // open to report an outcome other than 'ok' so the caller's storage-
+    // unavailable path can be exercised. Every real outcome below is reachable
+    // only from a real browser condition, so without this the in-memory
+    // fallback in store.js could not be tested at all.
+    if (fault && fault.openOutcome) {
+      resolve({ outcome: fault.openOutcome, error: new DOMException('fault injection', 'UnknownError') });
+      return;
+    }
+
     let settled = false;
     const req = indexedDB.open(name, version);
 

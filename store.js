@@ -30,7 +30,7 @@ export function subscribe(handler) {
 export async function open({ dbName } = {}) {
   const result = await openDb({
     name: dbName,
-    onVersionChange: () => emit({ type: 'storage-unavailable', reason: 'version-change' }),
+    onVersionChange: handleVersionChange,
   });
 
   if (result.outcome === 'version-error') {
@@ -38,14 +38,78 @@ export async function open({ dbName } = {}) {
   }
 
   if (result.outcome !== 'ok') {
-    memoryFallback = { notes: new Map(), drafts: new Map(), versions: new Map() };
+    // Reused, not rebuilt: if some caller retries open() after a first failure,
+    // rebuilding would throw away everything typed into the memory session so
+    // far — which is the one thing this mode exists to hold on to.
+    memoryFallback = memoryFallback || newMemoryStore();
     const reason = result.outcome === 'blocked' ? 'blocked' : result.outcome === 'corrupt' ? 'corrupt' : 'unavailable';
     emit({ type: 'storage-unavailable', reason });
     return { available: false, retention: 'unknown', schemaVersion: 1, reason };
   }
 
   conn = result.db;
+  // A previous open() may have failed and left a memory session holding text
+  // the user has already typed. Storage working now does not make that text
+  // less real, so it is written through to disk before memory mode is turned
+  // off — clearing the flag first would strand every one of those notes behind
+  // a guard nothing reads any more. A migration that fails leaves memory mode
+  // on rather than dropping the notes: honest degradation beats a silent loss.
+  if (memoryFallback) {
+    try {
+      await migrateMemorySessionToDisk();
+      memoryFallback = null;
+    } catch (error) {
+      console.error('heldnote: could not migrate the memory session to storage', error);
+      conn = null;
+      emit({ type: 'storage-unavailable', reason: 'migration-failed' });
+      return { available: false, retention: 'unknown', schemaVersion: 1, reason: 'migration-failed' };
+    }
+  }
+  // Fire-and-forget: store-api.md says maintenance is "called at startup", but
+  // it was previously only ever reached from a quota-failure retry, so pruning
+  // happened exclusively AFTER a write had already failed. open() must not wait
+  // for it (boot latency is the whole point of an app that opens instantly),
+  // and must not be able to fail because of it — a pruning pass that throws is
+  // logged and otherwise ignored, exactly as it is on the retry paths.
+  runMaintenance().catch((error) => {
+    console.error('heldnote: startup maintenance failed', error);
+  });
   return { available: true, retention: 'unknown', schemaVersion: 1 };
+}
+
+// Runs when another tab's upgrade forces this connection closed. db.js has
+// already called db.close() by the time this is reached, so the handle in
+// `conn` is dead. Dropping it is what makes every subsequent call fail through
+// activeConn()'s typed `storage-unavailable` error instead of a raw TypeError
+// (null) or InvalidStateError (closed handle) from deep inside a transaction.
+//
+// This deliberately does NOT fail over to memoryFallback: the notes that exist
+// are on disk, and an empty in-memory store would make the whole list appear to
+// vanish — a far more alarming lie than an honest "storage is not available,
+// reload". The event tells the UI to say exactly that.
+function handleVersionChange() {
+  conn = null;
+  emit({ type: 'storage-unavailable', reason: 'version-change' });
+}
+
+// The browser fires versionchange only when a second connection requests a
+// higher version, which a single-page test cannot stage portably. This calls
+// the very handler db.js is wired to, so what the test exercises is the
+// production path, not a re-implementation of it.
+export function __simulateVersionChangeForTests() {
+  handleVersionChange();
+}
+
+// Every persisted-path transaction goes through this instead of touching `conn`
+// directly. Before open(), and after the connection is force-closed by another
+// tab's upgrade (see onVersionChange above), `conn` is null — and
+// openTransaction(null, ...) throws a raw TypeError from db.js that no caller
+// can branch on. This turns that into the documented StoreError code.
+function activeConn() {
+  if (!conn) {
+    throw Object.assign(new Error('storage is not available'), { code: 'storage-unavailable' });
+  }
+  return conn;
 }
 
 export async function close() {
@@ -95,6 +159,7 @@ function toNoteSummary(record) {
 }
 
 export async function createNote() {
+  if (memoryFallback) return memoryCreateNote();
   const id = newId();
   const now = Date.now();
   const noteRecord = {
@@ -103,7 +168,7 @@ export async function createNote() {
   };
   const draftRecord = { noteId: id, text: '', localRev: 0, savedAt: now, byteLength: 0 };
 
-  const tx = openTransaction(conn, ['notes', 'drafts'], 'readwrite', { durability: 'strict' });
+  const tx = openTransaction(activeConn(), ['notes', 'drafts'], 'readwrite', { durability: 'strict' });
   tx.objectStore('notes').put(noteRecord);
   tx.objectStore('drafts').put(draftRecord);
   await awaitTransactionComplete(tx);
@@ -112,7 +177,8 @@ export async function createNote() {
 }
 
 export async function listNotes({ query, includeTrashed = false, limit, before } = {}) {
-  const tx = openTransaction(conn, ['notes', 'drafts'], 'readonly');
+  if (memoryFallback) return memoryListNotes({ query, includeTrashed, limit, before });
+  const tx = openTransaction(activeConn(), ['notes', 'drafts'], 'readonly');
   const notesStore = tx.objectStore('notes');
   const draftsStore = tx.objectStore('drafts');
   const results = [];
@@ -177,7 +243,8 @@ const revCounters = new Map();
 const durableRevs = new Map();
 
 export async function getNote(id) {
-  const tx = openTransaction(conn, ['notes', 'drafts'], 'readonly');
+  if (memoryFallback) return memoryGetNote(id);
+  const tx = openTransaction(activeConn(), ['notes', 'drafts'], 'readonly');
   const noteRecord = await requestToPromise(tx.objectStore('notes').get(id));
   const draftRecord = await requestToPromise(tx.objectStore('drafts').get(id));
   if (!noteRecord || !draftRecord) {
@@ -198,7 +265,8 @@ export async function getNote(id) {
 }
 
 async function updateNoteFields(id, fields) {
-  const tx = openTransaction(conn, ['notes'], 'readwrite', { durability: 'strict' });
+  if (memoryFallback) return memoryUpdateNoteFields(id, fields);
+  const tx = openTransaction(activeConn(), ['notes'], 'readwrite', { durability: 'strict' });
   const store = tx.objectStore('notes');
   const record = await requestToPromise(store.get(id));
   if (!record) throw Object.assign(new Error(`note ${id} not found`), { code: 'not-found' });
@@ -217,7 +285,8 @@ export async function trashNote(id) {
 }
 
 export async function restoreNote(id) {
-  const tx = openTransaction(conn, ['notes'], 'readwrite', { durability: 'strict' });
+  if (memoryFallback) return memoryRestoreNote(id);
+  const tx = openTransaction(activeConn(), ['notes'], 'readwrite', { durability: 'strict' });
   const noteStore = tx.objectStore('notes');
   const record = await requestToPromise(noteStore.get(id));
   if (!record) throw Object.assign(new Error(`note ${id} not found`), { code: 'not-found' });
@@ -229,7 +298,8 @@ export async function restoreNote(id) {
 }
 
 export async function purgeNote(id) {
-  const tx = openTransaction(conn, ['notes', 'drafts', 'versions'], 'readwrite', { durability: 'strict' });
+  if (memoryFallback) return memoryPurgeNote(id);
+  const tx = openTransaction(activeConn(), ['notes', 'drafts', 'versions'], 'readwrite', { durability: 'strict' });
   tx.objectStore('notes').delete(id);
   tx.objectStore('drafts').delete(id);
   const versionsStore = tx.objectStore('versions');
@@ -293,6 +363,21 @@ function isQuotaError(error) {
   return Boolean(error) && (error.name === 'QuotaExceededError' || error.name === 'AbortError');
 }
 
+// LIMITS.MAX_NOTE_SIZE_BYTES is the "tested maximum note size" the design
+// adopted in place of the earlier "no size limit" position. It was defined but
+// referenced nowhere, which is the worst of both worlds: a documented guarantee
+// with no enforcement behind it. Enforced on the draft path only — that is the
+// one path a user can drive past the cap by typing (or pasting), and it is the
+// path where refusing early keeps a single oversized note from being the reason
+// every other note stops saving.
+function assertWithinSizeLimit(noteId, byteLength) {
+  if (byteLength <= LIMITS.MAX_NOTE_SIZE_BYTES) return;
+  throw Object.assign(
+    new Error(`note ${noteId} is ${byteLength} bytes, over the ${LIMITS.MAX_NOTE_SIZE_BYTES}-byte maximum`),
+    { code: 'note-too-large', byteLength, limit: LIMITS.MAX_NOTE_SIZE_BYTES },
+  );
+}
+
 function queueFor(noteId) {
   let q = draftQueues.get(noteId);
   if (!q) {
@@ -303,6 +388,7 @@ function queueFor(noteId) {
 }
 
 export function saveDraft(id, text) {
+  if (memoryFallback) return memorySaveDraft(id, text);
   const nextRev = (revCounters.get(id) || 0) + 1;
   revCounters.set(id, nextRev);
 
@@ -397,10 +483,17 @@ async function runDraftWrite(noteId) {
       const byteLength = new TextEncoder().encode(text).length;
       const title = deriveTitle(text);
 
+      // The size cap is enforced HERE — after coalescing, before any
+      // transaction is opened — so nothing partial is ever written and only
+      // the newest text is ever measured. Throwing (rather than returning)
+      // routes this through the one place that already owns receipt building,
+      // waiter settlement and the inFlight reset for every other failure.
+      assertWithinSizeLimit(noteId, byteLength);
+
       if (currentGeneration(noteId) !== generationAtQueue) {
         throw Object.assign(new Error('stale write superseded by a restore'), { code: 'stale-generation' });
       }
-      const tx = openTransaction(conn, ['notes', 'drafts'], 'readwrite', { durability: 'strict' });
+      const tx = openTransaction(activeConn(), ['notes', 'drafts'], 'readwrite', { durability: 'strict' });
       // The note record is read BEFORE the draft is written. Issued the other
       // way round, a get() that fails (or a note deleted or replaced by an
       // import out from under this writer) still leaves the drafts.put()
@@ -428,7 +521,17 @@ async function runDraftWrite(noteId) {
       receipt = { noteId, requestedRev: rev, durableRev, completedAt: Date.now() };
       emit({ type: 'saved', ...receipt });
     } catch (error) {
-      if (isQuotaError(error)) {
+      if (error && error.code === 'note-too-large') {
+        // Deliberately NOT truncated and NOT dropped: the text the user typed
+        // stays in the visible buffer (memoryOnlyText, the same channel the
+        // quota path uses, so copy/export still reach it) and the interface is
+        // told plainly that it is not being stored. Silently accepting it
+        // would be the dishonest option; silently cutting it would be worse.
+        memoryOnlyText.set(noteId, text);
+        receipt = { noteId, requestedRev: rev, durableRev: durableRevs.get(noteId) || 0, completedAt: Date.now(), error };
+        emit({ type: 'quota-warning', noteId, reason: 'note-too-large' });
+        emit({ type: 'memory-only', noteId, text });
+      } else if (isQuotaError(error)) {
         // One prune-and-retry, then the note this text belongs to goes
         // memory-only rather than looping forever against storage that is
         // still full.
@@ -450,7 +553,7 @@ async function runDraftWrite(noteId) {
             // scoped to the outer try block and are not visible here.
             const retryByteLength = new TextEncoder().encode(text).length;
             const retryTitle = deriveTitle(text);
-            const retryTx = openTransaction(conn, ['notes', 'drafts'], 'readwrite', { durability: 'strict' });
+            const retryTx = openTransaction(activeConn(), ['notes', 'drafts'], 'readwrite', { durability: 'strict' });
             // Same read-before-write ordering as the first attempt, for the
             // same reason.
             const retryNoteStore = retryTx.objectStore('notes');
@@ -499,6 +602,7 @@ async function runDraftWrite(noteId) {
 const lastVersionText = new Map(); // noteId -> text of the newest committed version, for dedup
 
 export async function commitVersion(id) {
+  if (memoryFallback) return memoryCommitVersion(id);
   const q = queueFor(id);
   // A restore already in progress will itself commit the next version (its
   // own write, or whatever runs after it in the finally block), so there is
@@ -533,7 +637,7 @@ export async function commitVersion(id) {
   if (q.restoring) return null;
   q.restoring = true;
   try {
-    const draftTx = openTransaction(conn, ['drafts'], 'readonly');
+    const draftTx = openTransaction(activeConn(), ['drafts'], 'readonly');
     const draft = await requestToPromise(draftTx.objectStore('drafts').get(id));
     // No draft record means no note: say so with a code callers can branch on
     // rather than letting draft.text raise a bare TypeError.
@@ -560,7 +664,7 @@ export async function commitVersion(id) {
       seq = await nextSeq(id);
       at = Date.now();
       byteLength = new TextEncoder().encode(draft.text).length;
-      const writeTx = openTransaction(conn, ['versions'], 'readwrite', { durability: 'strict' });
+      const writeTx = openTransaction(activeConn(), ['versions'], 'readwrite', { durability: 'strict' });
       writeTx.objectStore('versions').put({ noteId: id, seq, at, sourceRev: draft.localRev, text: draft.text, byteLength });
       await awaitTransactionComplete(writeTx);
     } catch (error) {
@@ -570,7 +674,7 @@ export async function commitVersion(id) {
         seq = await nextSeq(id);
         at = Date.now();
         byteLength = new TextEncoder().encode(draft.text).length;
-        const retryTx = openTransaction(conn, ['versions'], 'readwrite', { durability: 'strict' });
+        const retryTx = openTransaction(activeConn(), ['versions'], 'readwrite', { durability: 'strict' });
         retryTx.objectStore('versions').put({ noteId: id, seq, at, sourceRev: draft.localRev, text: draft.text, byteLength });
         await awaitTransactionComplete(retryTx);
       } catch (retryError) {
@@ -616,7 +720,7 @@ export async function commitVersion(id) {
 //     every subsequent local commit computes the same seq.
 // The primary key range below is the seq order itself, so neither matters.
 async function nextSeq(noteId) {
-  const tx = openTransaction(conn, ['versions'], 'readonly');
+  const tx = openTransaction(activeConn(), ['versions'], 'readonly');
   const range = IDBKeyRange.bound([noteId, -Infinity], [noteId, Infinity]);
   let maxSeq = 0;
   await new Promise((resolve, reject) => {
@@ -632,7 +736,8 @@ async function nextSeq(noteId) {
 }
 
 export async function listVersions(id, { before, limit } = {}) {
-  const tx = openTransaction(conn, ['versions'], 'readonly');
+  if (memoryFallback) return memoryListVersions(id, { before, limit });
+  const tx = openTransaction(activeConn(), ['versions'], 'readonly');
   const index = tx.objectStore('versions').index('by_note_at');
   const upper = before ? [id, before.at, before.seq] : [id, Infinity, Infinity];
   const range = IDBKeyRange.bound([id, -Infinity, -Infinity], upper, false, Boolean(before));
@@ -654,7 +759,8 @@ export async function listVersions(id, { before, limit } = {}) {
 }
 
 export async function getVersion(id, seq) {
-  const tx = openTransaction(conn, ['versions'], 'readonly');
+  if (memoryFallback) return memoryGetVersion(id, seq);
+  const tx = openTransaction(activeConn(), ['versions'], 'readonly');
   const record = await requestToPromise(tx.objectStore('versions').get([id, seq]));
   if (!record) throw Object.assign(new Error(`version ${id}/${seq} not found`), { code: 'not-found' });
   return { seq: record.seq, at: record.at, sourceRev: record.sourceRev, text: record.text };
@@ -708,6 +814,7 @@ function currentGeneration(noteId) {
 }
 
 export async function restoreVersion(id, seq) {
+  if (memoryFallback) return memoryRestoreVersion(id, seq);
   const target = await getVersion(id, seq);
 
   const currentRev = revCounters.get(id) || 0;
@@ -752,7 +859,7 @@ export async function restoreVersion(id, seq) {
 }
 
 async function runRestore(id, target, currentRev) {
-  const draftTx = openTransaction(conn, ['drafts'], 'readonly');
+  const draftTx = openTransaction(activeConn(), ['drafts'], 'readonly');
   const currentDraft = await requestToPromise(draftTx.objectStore('drafts').get(id));
 
   const newestVersions = await listVersions(id, { limit: 1 });
@@ -776,7 +883,7 @@ async function runRestore(id, target, currentRev) {
   const checkpointSeq = needsCheckpoint ? baseSeq : null;
   const restoredSeq = needsCheckpoint ? baseSeq + 1 : baseSeq;
 
-  const tx = openTransaction(conn, ['notes', 'drafts', 'versions'], 'readwrite', { durability: 'strict' });
+  const tx = openTransaction(activeConn(), ['notes', 'drafts', 'versions'], 'readwrite', { durability: 'strict' });
   const versionsStore = tx.objectStore('versions');
 
   const at = Date.now();
@@ -850,7 +957,7 @@ async function runRestore(id, target, currentRev) {
 // the explicit path; nothing automatic happens here, so `purged` is always 0.
 
 async function listNoteIds() {
-  const tx = openTransaction(conn, ['notes'], 'readonly');
+  const tx = openTransaction(activeConn(), ['notes'], 'readonly');
   const ids = [];
   await new Promise((resolve, reject) => {
     const req = tx.objectStore('notes').openCursor();
@@ -899,7 +1006,7 @@ async function pruneNote(noteId) {
 
   if (toDelete.length === 0) return 0;
 
-  const tx = openTransaction(conn, ['versions'], 'readwrite', { durability: 'strict' });
+  const tx = openTransaction(activeConn(), ['versions'], 'readwrite', { durability: 'strict' });
   const versionsStore = tx.objectStore('versions');
   for (const v of toDelete) {
     versionsStore.delete([noteId, v.seq]);
@@ -909,6 +1016,10 @@ async function pruneNote(noteId) {
 }
 
 export async function runMaintenance() {
+  // Nothing to prune: the in-memory maps are not under storage quota pressure,
+  // and thinning them would only destroy history the session still has room
+  // for. The shape of the result is kept identical so callers cannot tell.
+  if (memoryFallback) return { pruned: 0, purged: 0 };
   return withGlobalLock(async () => {
     const noteIds = await listNoteIds();
     let pruned = 0;
@@ -1039,7 +1150,7 @@ const SCHEMA_VERSION = 1;
 // backup round-trips settings without a second change to the file format, and
 // so no backup taken in the meantime silently drops data another module wrote.
 async function readAllMeta() {
-  const tx = openTransaction(conn, ['meta'], 'readonly');
+  const tx = openTransaction(activeConn(), ['meta'], 'readonly');
   const entries = [];
   await new Promise((resolve, reject) => {
     const req = tx.objectStore('meta').openCursor();
@@ -1081,6 +1192,13 @@ export async function exportAll() {
   // one consistent state — either fully pre-import or fully post-import,
   // never a stale summary list pointing at notes an import deleted during
   // the (unlocked) phase 1 flush-wait.
+  // Memory mode needs neither phase: memorySaveDraft publishes synchronously,
+  // so there is never a pending revision to flush, and no other transaction can
+  // interleave with the read below. The design is explicit that this session's
+  // notes must still be exportable — this is the only way anything typed in
+  // memory mode leaves the tab alive.
+  if (memoryFallback) return memoryExportAll();
+
   const pendingSummaries = await listNotes({ includeTrashed: true, limit: 100000 });
   for (const summary of pendingSummaries) {
     const rev = revCounters.get(summary.id);
@@ -1233,11 +1351,15 @@ function seedImportedNoteState(id, note, newestVersionText) {
 }
 
 export async function importAll(file, { mode }) {
+  // Validation is storage-independent and runs first in both modes, so a
+  // malformed file is refused identically whether or not IndexedDB is there.
   const parsed = await parseImportFile(file);
+
+  if (memoryFallback) return memoryImportAll(parsed, mode);
 
   return withGlobalLock(async () => {
     if (mode === 'replace') {
-      const tx = openTransaction(conn, ['notes', 'drafts', 'versions', 'meta'], 'readwrite', { durability: 'strict' });
+      const tx = openTransaction(activeConn(), ['notes', 'drafts', 'versions', 'meta'], 'readwrite', { durability: 'strict' });
       tx.objectStore('notes').clear();
       tx.objectStore('drafts').clear();
       tx.objectStore('versions').clear();
@@ -1294,7 +1416,7 @@ export async function importAll(file, { mode }) {
     }
 
     const idMap = new Map();
-    const tx = openTransaction(conn, ['notes', 'drafts', 'versions', 'meta'], 'readwrite', { durability: 'strict' });
+    const tx = openTransaction(activeConn(), ['notes', 'drafts', 'versions', 'meta'], 'readwrite', { durability: 'strict' });
     // Notes are copied alongside the existing ones, but settings are global and
     // have no "copy" — a key can hold one value. The file's entries win, which
     // is the only behaviour that makes a copy-mode import of a backup taken on
@@ -1326,4 +1448,402 @@ export async function importAll(file, { mode }) {
 
     return { notesAdded: 0, notesCopied: parsed.notes.length, versionsAdded: parsed.versions.length, skipped: 0 };
   });
+}
+
+// --- memory mode: the store with no storage under it ------------------------
+//
+// When open() cannot get an IndexedDB connection (blocked by another tab's
+// upgrade, a corrupt database, or storage switched off entirely) it returns
+// available:false and switches every function above onto the implementations
+// below, which hold the same records in plain Maps for the life of the tab.
+//
+// This is a product feature, not a test seam. design.md: "the app runs against
+// an explicit in-memory store for the session, says plainly that nothing is
+// being stored, and includes that session's notes in export." Before this
+// existed, memoryFallback was assigned and never read, so every call after a
+// failed open() reached openTransaction(null, …) and threw a raw TypeError —
+// the user could not create a note, could not type, and got no explanation.
+// An app about not losing things is at its least excusable when it is a dead
+// page.
+//
+// Two rules keep the seam invisible to callers:
+//
+//   - the RECORD shapes are the persisted ones (isDeleted/pinKey, no deletedAt
+//     key while live), normalized back to the domain shapes at the boundary by
+//     the very same toNoteSummary()/getNote() field mapping — so a caller
+//     cannot tell which path produced a Note, a NoteSummary, a VersionInfo or
+//     a SaveReceipt;
+//   - the EVENTS are the same ones in the same order (saving → saved, or
+//     saving → save-failed), so the status bar needs no memory-mode branch.
+//     "Nothing is being stored" is communicated once, by the
+//     storage-unavailable event open() already emits, not by degrading every
+//     subsequent save into a failure.
+//
+// Writes here are synchronous, which removes the entire class of problem the
+// persisted path's machinery exists for: there is no transaction to interleave,
+// so no draft queue, no q.restoring lock, and no generation fence is needed.
+// memorySaveDraft publishes and settles waiters before it returns, so flush()'s
+// existing durableRevs fast path answers immediately with no memory-mode branch
+// of its own. durableRevs is still the honest word for it — the revision really
+// is committed to the only store there is; the fact that that store dies with
+// the tab is what available:false says.
+//
+// Not implemented in memory mode, deliberately:
+//   - runMaintenance() returns {pruned:0, purged:0} (nothing is under quota);
+//   - acquireNoteLock/releaseNoteLock are left on the shared Web Locks path
+//     above — the API is unrelated to IndexedDB and still works, and a tab
+//     that is honest about holding a note open costs nothing;
+//   - persist() is never requested: there is no storage to ask about.
+
+function newMemoryStore() {
+  return {
+    notes: new Map(),    // id -> note record
+    drafts: new Map(),   // noteId -> draft record
+    versions: new Map(), // noteId -> Map(seq -> version record)
+    meta: new Map(),     // key -> meta entry
+  };
+}
+
+// Writes a memory session through to a connection that has just opened, in one
+// transaction so a failure partway leaves nothing behind and open() can keep
+// memory mode on. Records are already stored in their on-disk shapes (indexable
+// pinKey/isDeleted, deletedAt omitted while live), so they are put() as-is.
+//
+// Ids come from newId() and are unique per session, so a note written here
+// cannot collide with one already on disk; a put() is nonetheless the right
+// call rather than add(), since re-running a partially-applied migration after
+// a retry should converge rather than throw.
+async function migrateMemorySessionToDisk() {
+  const session = memoryFallback;
+  if (!session || session.notes.size === 0) return;
+
+  const tx = openTransaction(conn, ['notes', 'drafts', 'versions', 'meta'], 'readwrite', { durability: 'strict' });
+  const notesStore = tx.objectStore('notes');
+  const draftsStore = tx.objectStore('drafts');
+  const versionsStore = tx.objectStore('versions');
+  const metaStore = tx.objectStore('meta');
+
+  for (const record of session.notes.values()) notesStore.put(record);
+  for (const record of session.drafts.values()) draftsStore.put(record);
+  for (const versions of session.versions.values()) {
+    for (const record of versions.values()) versionsStore.put(record);
+  }
+  for (const entry of session.meta.values()) metaStore.put(entry);
+
+  await awaitTransactionComplete(tx);
+
+  // The revision bookkeeping was tracking the memory session; it describes the
+  // same notes, which now live on disk under the same ids and localRevs, so it
+  // carries over unchanged. Seeding durableRevs is what stops a flush() for
+  // already-migrated text from waiting on a write that will never come.
+  for (const draft of session.drafts.values()) {
+    revCounters.set(draft.noteId, Math.max(revCounters.get(draft.noteId) || 0, draft.localRev));
+    durableRevs.set(draft.noteId, Math.max(durableRevs.get(draft.noteId) || 0, draft.localRev));
+  }
+}
+
+function memoryVersionMap(noteId, create = false) {
+  let versions = memoryFallback.versions.get(noteId);
+  if (!versions && create) {
+    versions = new Map();
+    memoryFallback.versions.set(noteId, versions);
+  }
+  return versions;
+}
+
+function notFound(message) {
+  return Object.assign(new Error(message), { code: 'not-found' });
+}
+
+function memoryCreateNote() {
+  const id = newId();
+  const now = Date.now();
+  memoryFallback.notes.set(id, {
+    id, title: 'Untitled', createdAt: now, updatedAt: now, localRev: 0,
+    pinned: false, pinKey: 0, isDeleted: 0,
+  });
+  memoryFallback.drafts.set(id, { noteId: id, text: '', localRev: 0, savedAt: now, byteLength: 0 });
+  return { id, title: 'Untitled', text: '', createdAt: now, updatedAt: now, pinned: false, deletedAt: null, localRev: 0 };
+}
+
+function memoryListNotes({ query, includeTrashed = false, limit, before } = {}) {
+  const lowerQuery = query ? query.toLowerCase() : null;
+  const results = [];
+
+  for (const record of memoryFallback.notes.values()) {
+    if (!includeTrashed && record.isDeleted === 1) continue;
+    // Title first, body second, same order and same defensive String(… || '')
+    // coercion as the cursor path — a record shape that would throw there must
+    // not throw here either.
+    let matchesQuery = !lowerQuery || String(record.title || '').toLowerCase().includes(lowerQuery);
+    if (!matchesQuery) {
+      const draftRecord = memoryFallback.drafts.get(record.id);
+      matchesQuery = !!draftRecord && String(draftRecord.text || '').toLowerCase().includes(lowerQuery);
+    }
+    if (matchesQuery) results.push(toNoteSummary(record));
+  }
+
+  results.sort((a, b) => {
+    if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
+    return b.updatedAt - a.updatedAt;
+  });
+
+  const sliced = before ? results.filter((r) => r.updatedAt < before) : results;
+  return typeof limit === 'number' ? sliced.slice(0, limit) : sliced;
+}
+
+function memoryGetNote(id) {
+  const noteRecord = memoryFallback.notes.get(id);
+  const draftRecord = memoryFallback.drafts.get(id);
+  if (!noteRecord || !draftRecord) throw notFound(`note ${id} not found`);
+  revCounters.set(id, Math.max(revCounters.get(id) || 0, draftRecord.localRev));
+  durableRevs.set(id, Math.max(durableRevs.get(id) || 0, draftRecord.localRev));
+  return {
+    id: noteRecord.id,
+    title: noteRecord.title,
+    text: draftRecord.text,
+    createdAt: noteRecord.createdAt,
+    updatedAt: noteRecord.updatedAt,
+    pinned: noteRecord.pinKey === 1,
+    deletedAt: noteRecord.isDeleted === 1 ? noteRecord.deletedAt : null,
+    localRev: draftRecord.localRev,
+  };
+}
+
+function memoryUpdateNoteFields(id, fields) {
+  const record = memoryFallback.notes.get(id);
+  if (!record) throw notFound(`note ${id} not found`);
+  Object.assign(record, fields);
+  emit({ type: 'note-changed', noteId: id });
+}
+
+function memoryRestoreNote(id) {
+  const record = memoryFallback.notes.get(id);
+  if (!record) throw notFound(`note ${id} not found`);
+  record.isDeleted = 0;
+  delete record.deletedAt;
+  emit({ type: 'note-changed', noteId: id });
+}
+
+function memoryPurgeNote(id) {
+  memoryFallback.notes.delete(id);
+  memoryFallback.drafts.delete(id);
+  memoryFallback.versions.delete(id);
+  emit({ type: 'note-changed', noteId: id });
+}
+
+// Mirrors saveDraft's contract exactly: synchronous, returns the assigned
+// revision, and NEVER throws — a caller that forgot to catch must not be the
+// reason a keystroke is lost. Every failure leaves through the event stream and
+// through resolveWaiters (which sets q.lastFailure, so a later flush() for this
+// revision rejects instead of hanging), exactly as runDraftWrite's does.
+function memorySaveDraft(id, text) {
+  const nextRev = (revCounters.get(id) || 0) + 1;
+  revCounters.set(id, nextRev);
+  emit({ type: 'saving', noteId: id, requestedRev: nextRev });
+
+  let receipt;
+  try {
+    const noteRecord = memoryFallback.notes.get(id);
+    if (!noteRecord) throw notFound(`note ${id} not found`);
+
+    // deriveTitle before any mutation: a non-string payload throws here, and
+    // must leave the record untouched rather than half-updated.
+    const title = deriveTitle(text);
+    const now = Date.now();
+    const byteLength = new TextEncoder().encode(text).length;
+
+    memoryFallback.drafts.set(id, { noteId: id, text, localRev: nextRev, savedAt: now, byteLength });
+    noteRecord.title = title;
+    noteRecord.updatedAt = now;
+    noteRecord.localRev = nextRev;
+
+    const durableRev = Math.max(durableRevs.get(id) || 0, nextRev);
+    durableRevs.set(id, durableRev);
+    receipt = { noteId: id, requestedRev: nextRev, durableRev, completedAt: Date.now() };
+    emit({ type: 'saved', ...receipt });
+  } catch (error) {
+    receipt = { noteId: id, requestedRev: nextRev, durableRev: durableRevs.get(id) || 0, completedAt: Date.now(), error };
+    emit({ type: 'save-failed', ...receipt });
+  }
+
+  resolveWaiters(id, receipt);
+  return nextRev;
+}
+
+function memoryCommitVersion(id) {
+  const draft = memoryFallback.drafts.get(id);
+  if (!draft) throw notFound(`note ${id} not found`);
+  // Same dedup invariant as the persisted path, against the same map.
+  if (lastVersionText.get(id) === draft.text) return null;
+
+  const versions = memoryVersionMap(id, true);
+  let maxSeq = 0;
+  for (const seq of versions.keys()) {
+    if (seq > maxSeq) maxSeq = seq;
+  }
+  const seq = maxSeq + 1;
+  const at = Date.now();
+  const byteLength = new TextEncoder().encode(draft.text).length;
+  versions.set(seq, { noteId: id, seq, at, sourceRev: draft.localRev, text: draft.text, byteLength });
+  lastVersionText.set(id, draft.text);
+  return { seq, at, sourceRev: draft.localRev, size: byteLength };
+}
+
+// Newest-first by (at, seq), matching the by_note_at index walked in reverse,
+// so `before` remains the same exclusive [at, seq] tuple cursor and paging
+// behaves identically on both paths.
+function memoryListVersions(id, { before, limit } = {}) {
+  const versions = memoryVersionMap(id);
+  if (!versions) return [];
+
+  const ordered = Array.from(versions.values()).sort((a, b) => (b.at - a.at) || (b.seq - a.seq));
+  const afterCursor = before
+    ? ordered.filter((v) => v.at < before.at || (v.at === before.at && v.seq < before.seq))
+    : ordered;
+  const page = limit ? afterCursor.slice(0, limit) : afterCursor;
+  return page.map((v) => ({ seq: v.seq, at: v.at, sourceRev: v.sourceRev, size: v.byteLength }));
+}
+
+function memoryGetVersion(id, seq) {
+  const versions = memoryVersionMap(id);
+  const record = versions && versions.get(seq);
+  if (!record) throw notFound(`version ${id}/${seq} not found`);
+  return { seq: record.seq, at: record.at, sourceRev: record.sourceRev, text: record.text };
+}
+
+// Same guarantees as the persisted restore — an uncommitted draft is
+// checkpointed as a version first, no existing version is ever removed, and the
+// restore itself lands as a new version — minus the locking, which exists only
+// to fence transactions against each other. Nothing here awaits, so no other
+// call can observe or interleave with a partially applied restore.
+function memoryRestoreVersion(id, seq) {
+  const target = memoryGetVersion(id, seq);
+  const currentDraft = memoryFallback.drafts.get(id);
+  const noteRecord = memoryFallback.notes.get(id);
+  if (!currentDraft || !noteRecord) throw notFound(`note ${id} not found`);
+
+  const newest = memoryListVersions(id, { limit: 1 });
+  const newestVersionText = newest.length ? memoryGetVersion(id, newest[0].seq).text : undefined;
+  const needsCheckpoint = currentDraft.text !== newestVersionText;
+
+  const nextRev = (revCounters.get(id) || 0) + 1;
+  revCounters.set(id, Math.max(revCounters.get(id) || 0, nextRev));
+
+  const versions = memoryVersionMap(id, true);
+  let maxSeq = 0;
+  for (const existing of versions.keys()) {
+    if (existing > maxSeq) maxSeq = existing;
+  }
+  const baseSeq = maxSeq + 1;
+  const checkpointSeq = needsCheckpoint ? baseSeq : null;
+  const restoredSeq = needsCheckpoint ? baseSeq + 1 : baseSeq;
+
+  const at = Date.now();
+  if (needsCheckpoint) {
+    const checkpointByteLength = new TextEncoder().encode(currentDraft.text).length;
+    versions.set(checkpointSeq, { noteId: id, seq: checkpointSeq, at, sourceRev: currentDraft.localRev, text: currentDraft.text, byteLength: checkpointByteLength });
+  }
+
+  const byteLength = new TextEncoder().encode(target.text).length;
+  versions.set(restoredSeq, { noteId: id, seq: restoredSeq, at, sourceRev: nextRev, text: target.text, byteLength });
+
+  memoryFallback.drafts.set(id, { noteId: id, text: target.text, localRev: nextRev, savedAt: at, byteLength });
+  noteRecord.title = deriveTitle(target.text);
+  noteRecord.updatedAt = at;
+  noteRecord.localRev = nextRev;
+
+  durableRevs.set(id, Math.max(durableRevs.get(id) || 0, nextRev));
+  resolveWaiters(id, { noteId: id, requestedRev: nextRev, durableRev: durableRevs.get(id), completedAt: at });
+  lastVersionText.set(id, target.text);
+  emit({ type: 'note-changed', noteId: id });
+
+  return { seq: restoredSeq, at, sourceRev: nextRev, size: byteLength };
+}
+
+function memoryExportAll() {
+  const noteSummaries = memoryListNotes({ includeTrashed: true });
+
+  const notes = noteSummaries.map((summary) => memoryGetNote(summary.id));
+
+  const versions = [];
+  for (const summary of noteSummaries) {
+    for (const info of memoryListVersions(summary.id, {})) {
+      versions.push({ noteId: summary.id, ...memoryGetVersion(summary.id, info.seq) });
+    }
+  }
+
+  // Always an array, empty or not, so the file shape is identical on both
+  // paths and importAll's optional-meta handling never has to special-case one.
+  const meta = Array.from(memoryFallback.meta.values());
+
+  const payload = { schemaVersion: SCHEMA_VERSION, exportedAt: Date.now(), notes, versions, meta };
+  return new Blob([JSON.stringify(payload)], { type: 'application/json' });
+}
+
+function memoryImportAll(parsed, mode) {
+  if (mode === 'replace') {
+    // Same waiter discipline as the persisted path: an entry about to be
+    // discarded may still hold flush() waiters, and a waiter whose queue object
+    // is thrown away can never be settled by anything.
+    for (const [staleNoteId, staleQueue] of draftQueues) {
+      if (staleQueue.waiters.length > 0) {
+        const error = Object.assign(new Error('note was replaced by an import before this write could complete'), { code: 'import-replaced' });
+        resolveWaiters(staleNoteId, { noteId: staleNoteId, requestedRev: Infinity, durableRev: -Infinity, completedAt: Date.now(), error });
+      }
+    }
+
+    memoryFallback.notes.clear();
+    memoryFallback.drafts.clear();
+    memoryFallback.versions.clear();
+    memoryFallback.meta.clear();
+    draftQueues.clear();
+    revCounters.clear();
+    durableRevs.clear();
+    lastVersionText.clear();
+    memoryOnlyText.clear();
+    noteGeneration.clear();
+
+    for (const entry of parsed.meta) {
+      memoryFallback.meta.set(entry.key, entry);
+    }
+    for (const note of parsed.notes) {
+      memoryFallback.notes.set(note.id, noteRecordFrom(note));
+      memoryFallback.drafts.set(note.id, { noteId: note.id, text: note.text, localRev: note.localRev, savedAt: note.updatedAt, byteLength: new TextEncoder().encode(note.text).length });
+    }
+    for (const v of parsed.versions) {
+      memoryVersionMap(v.noteId, true).set(v.seq, { noteId: v.noteId, seq: v.seq, at: v.at, sourceRev: v.sourceRev, text: v.text, byteLength: new TextEncoder().encode(v.text).length });
+    }
+
+    const newestText = newestVersionTextByNoteId(parsed.versions);
+    for (const note of parsed.notes) {
+      seedImportedNoteState(note.id, note, newestText.get(note.id)?.text);
+    }
+
+    return { notesAdded: parsed.notes.length, notesCopied: 0, versionsAdded: parsed.versions.length, skipped: 0 };
+  }
+
+  const idMap = new Map();
+  for (const entry of parsed.meta) {
+    memoryFallback.meta.set(entry.key, entry);
+  }
+  for (const note of parsed.notes) {
+    const freshId = newId();
+    idMap.set(note.id, freshId);
+    memoryFallback.notes.set(freshId, noteRecordFrom(note, freshId));
+    memoryFallback.drafts.set(freshId, { noteId: freshId, text: note.text, localRev: note.localRev, savedAt: note.updatedAt, byteLength: new TextEncoder().encode(note.text).length });
+  }
+  for (const v of parsed.versions) {
+    const freshId = idMap.get(v.noteId);
+    memoryVersionMap(freshId, true).set(v.seq, { noteId: freshId, seq: v.seq, at: v.at, sourceRev: v.sourceRev, text: v.text, byteLength: new TextEncoder().encode(v.text).length });
+  }
+
+  const remappedVersions = parsed.versions.map((v) => ({ ...v, noteId: idMap.get(v.noteId) }));
+  const newestText = newestVersionTextByNoteId(remappedVersions);
+  for (const note of parsed.notes) {
+    const freshId = idMap.get(note.id);
+    seedImportedNoteState(freshId, note, newestText.get(freshId)?.text);
+  }
+
+  return { notesAdded: 0, notesCopied: parsed.notes.length, versionsAdded: parsed.versions.length, skipped: 0 };
 }
