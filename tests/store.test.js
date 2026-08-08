@@ -619,7 +619,8 @@ test('commitVersion for a note that does not exist rejects with not-found', asyn
 });
 
 test('a draft write for a note that does not exist fails cleanly and writes no draft record', async () => {
-  await store.open({ dbName: `heldnote-test-${Date.now()}` });
+  const dbName = `heldnote-test-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  await store.open({ dbName });
 
   const events = [];
   store.subscribe((e) => events.push(e));
@@ -633,12 +634,20 @@ test('a draft write for a note that does not exist fails cleanly and writes no d
   assertEquals(code, 'not-found');
   assert(events.some((e) => e.type === 'save-failed'), 'expected a save-failed event');
 
-  // The note is still absent, and no half-written state was left behind.
-  let getCode;
-  await store.getNote('no-such-note').catch((e) => { getCode = e.code; });
-  assertEquals(getCode, 'not-found');
-
   await store.close();
+
+  // getNote alone cannot prove this: it needs BOTH records and would report
+  // not-found even with a draft stranded on disk. Only a raw read can tell the
+  // difference between "nothing was written" and "the note half-exists".
+  const strandedDraft = await withRawDb(dbName, ['drafts'], 'readonly', (tx) => {
+    const req = tx.objectStore('drafts').get('no-such-note');
+    const box = {};
+    req.onsuccess = () => { box.value = req.result === undefined ? null : req.result; };
+    return box;
+  });
+  assertEquals(strandedDraft, null, 'a draft record must not survive for a note that never existed');
+
+  indexedDB.deleteDatabase(dbName);
 });
 
 // --- import validates every record, not just the envelope -------------------
@@ -678,19 +687,64 @@ test('importing a file whose version has a non-numeric seq fails with invalid-im
   await store.close();
 });
 
+// Opens the database behind store.js's back. Both tests below assert on the
+// raw records — a stranded draft, and a note whose title is not a string —
+// and neither state is reachable or observable through the public API, which
+// is exactly why the claims went unverified before.
+function withRawDb(dbName, storeNames, mode, work) {
+  return new Promise((resolve, reject) => {
+    const openReq = indexedDB.open(dbName);
+    openReq.onerror = () => reject(openReq.error);
+    openReq.onsuccess = () => {
+      const db = openReq.result;
+      const tx = db.transaction(storeNames, mode);
+      let result;
+      try {
+        result = work(tx);
+      } catch (error) {
+        db.close();
+        reject(error);
+        return;
+      }
+      tx.oncomplete = () => { db.close(); resolve(result && result.value !== undefined ? result.value : result); };
+      tx.onerror = () => { db.close(); reject(tx.error); };
+      tx.onabort = () => { db.close(); reject(tx.error); };
+    };
+  });
+}
+
 test('a note whose title is not a string does not hang search (defensive guard)', async () => {
-  await store.open({ dbName: `heldnote-test-${Date.now()}` });
+  const dbName = `heldnote-test-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  await store.open({ dbName });
   const note = await store.createNote();
   const rev = store.saveDraft(note.id, 'searchable body');
   await store.flush(note.id, rev);
+  await store.close();
 
-  // listNotes must survive any record shape it is handed, not only the ones
-  // parseImportFile lets through — so the search path is asserted to complete
-  // rather than hang, with a bounded wait proving it.
-  const results = await withTimeout(store.listNotes({ query: 'searchable' }), 2000, 'listNotes hung on search');
-  assertEquals(results.length, 1);
+  // Write a title parseImportFile would never let through. Reaching past the
+  // store is the point: the guard exists for records that got onto disk some
+  // other way (an older build, a partially-applied write, a third-party tool),
+  // and a test that only uses well-formed notes cannot tell whether it works.
+  await withRawDb(dbName, ['notes'], 'readwrite', (tx) => {
+    const notes = tx.objectStore('notes');
+    const getReq = notes.get(note.id);
+    getReq.onsuccess = () => {
+      const record = getReq.result;
+      delete record.title;
+      notes.put(record);
+    };
+  });
+
+  await store.open({ dbName });
+  // Unguarded, record.title.toLowerCase() throws inside the async cursor
+  // handler: cursor.continue() is never reached, the outer promise never
+  // settles, and the note list dies until reload. The timeout is the assertion.
+  const results = await withTimeout(store.listNotes({ query: 'searchable' }), 2000, 'listNotes hung on a note with no title');
+  assertEquals(results.length, 1, 'the note should still be found by its body text');
+  assertEquals(results[0].id, note.id);
 
   await store.close();
+  indexedDB.deleteDatabase(dbName);
 });
 
 // --- backup carries the meta (settings) store -------------------------------

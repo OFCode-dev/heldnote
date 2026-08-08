@@ -60,6 +60,11 @@ export async function open({ dbName } = {}) {
       memoryFallback = null;
     } catch (error) {
       console.error('heldnote: could not migrate the memory session to storage', error);
+      // Close before dropping the handle. Left open and unreachable, this
+      // connection would block another tab's upgrade and block deleteDatabase
+      // — able to cause the very `blocked` outcome that forces memory mode.
+      // close() cannot clean it up later either: it is guarded on `conn`.
+      result.db.close();
       conn = null;
       emit({ type: 'storage-unavailable', reason: 'migration-failed' });
       return { available: false, retention: 'unknown', schemaVersion: 1, reason: 'migration-failed' };
@@ -483,16 +488,21 @@ async function runDraftWrite(noteId) {
       const byteLength = new TextEncoder().encode(text).length;
       const title = deriveTitle(text);
 
+      if (currentGeneration(noteId) !== generationAtQueue) {
+        throw Object.assign(new Error('stale write superseded by a restore'), { code: 'stale-generation' });
+      }
+
       // The size cap is enforced HERE — after coalescing, before any
       // transaction is opened — so nothing partial is ever written and only
       // the newest text is ever measured. Throwing (rather than returning)
       // routes this through the one place that already owns receipt building,
       // waiter settlement and the inFlight reset for every other failure.
+      //
+      // It sits BELOW the generation fence deliberately: a payload a restore
+      // has already superseded is not the user's current text, so stashing it
+      // in memoryOnlyText and announcing "not saved" would report a problem
+      // about text nobody is looking at any more.
       assertWithinSizeLimit(noteId, byteLength);
-
-      if (currentGeneration(noteId) !== generationAtQueue) {
-        throw Object.assign(new Error('stale write superseded by a restore'), { code: 'stale-generation' });
-      }
       const tx = openTransaction(activeConn(), ['notes', 'drafts'], 'readwrite', { durability: 'strict' });
       // The note record is read BEFORE the draft is written. Issued the other
       // way round, a get() that fails (or a note deleted or replaced by an
@@ -861,6 +871,12 @@ export async function restoreVersion(id, seq) {
 async function runRestore(id, target, currentRev) {
   const draftTx = openTransaction(activeConn(), ['drafts'], 'readonly');
   const currentDraft = await requestToPromise(draftTx.objectStore('drafts').get(id));
+  // A note purged out from under the restore leaves no draft record. Guarding
+  // turns what would be a bare TypeError on currentDraft.text into the typed
+  // error callers can branch on — matching commitVersion and the memory path.
+  if (!currentDraft) {
+    throw Object.assign(new Error(`note ${id} not found`), { code: 'not-found' });
+  }
 
   const newestVersions = await listVersions(id, { limit: 1 });
   const newestVersionText = newestVersions.length ? (await getVersion(id, newestVersions[0].seq)).text : undefined;
@@ -884,6 +900,19 @@ async function runRestore(id, target, currentRev) {
   const restoredSeq = needsCheckpoint ? baseSeq + 1 : baseSeq;
 
   const tx = openTransaction(activeConn(), ['notes', 'drafts', 'versions'], 'readwrite', { durability: 'strict' });
+
+  // Read the note record FIRST, for the same reason runDraftWrite does: a note
+  // purged out from under this restore makes the dereference below throw, and a
+  // throw from an async continuation does not abort an IndexedDB transaction —
+  // so any put() already issued would still commit, writing checkpoint and
+  // restored versions for a note that no longer exists. Reading first means a
+  // missing note aborts with the transaction still carrying nothing.
+  const noteStore = tx.objectStore('notes');
+  const noteRecord = await requestToPromise(noteStore.get(id));
+  if (!noteRecord) {
+    throw Object.assign(new Error(`note ${id} not found`), { code: 'not-found' });
+  }
+
   const versionsStore = tx.objectStore('versions');
 
   const at = Date.now();
@@ -898,8 +927,6 @@ async function runRestore(id, target, currentRev) {
   const draftStore = tx.objectStore('drafts');
   draftStore.put({ noteId: id, text: target.text, localRev: nextRev, savedAt: at, byteLength });
 
-  const noteStore = tx.objectStore('notes');
-  const noteRecord = await requestToPromise(noteStore.get(id));
   noteRecord.title = deriveTitle(target.text);
   noteRecord.updatedAt = at;
   noteRecord.localRev = nextRev;
@@ -1279,6 +1306,12 @@ async function parseImportFile(file) {
   } catch (_e) {
     throw Object.assign(new Error('file is not valid JSON'), { code: 'invalid-import' });
   }
+  // `null` parses as valid JSON, so the object check has to come first: without
+  // it, reading .schemaVersion off null throws a bare TypeError out of a
+  // function whose entire contract is to reject bad files with invalid-import.
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw Object.assign(new Error('file does not have the expected shape'), { code: 'invalid-import' });
+  }
   if (typeof parsed.schemaVersion !== 'number' || !Array.isArray(parsed.notes) || !Array.isArray(parsed.versions)) {
     throw Object.assign(new Error('file does not have the expected shape'), { code: 'invalid-import' });
   }
@@ -1297,12 +1330,27 @@ async function parseImportFile(file) {
     if (!isValidImportedNote(note)) {
       throw Object.assign(new Error('file contains a note that is missing required fields'), { code: 'invalid-import' });
     }
+    // Two notes sharing an id do not survive the import intact: copy mode keeps
+    // only the last id mapping, so every version belonging to the first is
+    // silently re-parented onto the second, and replace mode simply overwrites.
+    // Refusing is the only outcome that does not quietly rearrange history.
+    if (noteIds.has(note.id)) {
+      throw Object.assign(new Error(`file contains more than one note with id ${note.id}`), { code: 'invalid-import' });
+    }
     noteIds.add(note.id);
   }
+  const versionKeys = new Set();
   for (const version of parsed.versions) {
     if (!isValidImportedVersion(version)) {
       throw Object.assign(new Error('file contains a version that is missing required fields'), { code: 'invalid-import' });
     }
+    // versions is keyed [noteId, seq], so a repeated pair means the second put
+    // overwrites the first and one of the two snapshots is lost on import.
+    const versionKey = `${version.noteId} ${version.seq}`;
+    if (versionKeys.has(versionKey)) {
+      throw Object.assign(new Error(`file contains more than one version ${version.seq} for note ${version.noteId}`), { code: 'invalid-import' });
+    }
+    versionKeys.add(versionKey);
     // A version naming a note the file does not carry has nowhere to go: copy
     // mode would map it to an undefined id and abort the whole transaction on
     // a DataError, and replace mode would write an unreachable orphan record.
@@ -1515,9 +1563,17 @@ function newMemoryStore() {
 // a retry should converge rather than throw.
 async function migrateMemorySessionToDisk() {
   const session = memoryFallback;
-  if (!session || session.notes.size === 0) return;
+  // Checked across all four maps, not just notes: a memory session that only
+  // ever imported settings has meta to carry and no notes, and skipping on an
+  // empty notes map alone would drop it when the flag is cleared.
+  if (!session) return;
+  const isEmpty = session.notes.size === 0
+    && session.drafts.size === 0
+    && session.versions.size === 0
+    && session.meta.size === 0;
+  if (isEmpty) return;
 
-  const tx = openTransaction(conn, ['notes', 'drafts', 'versions', 'meta'], 'readwrite', { durability: 'strict' });
+  const tx = openTransaction(activeConn(), ['notes', 'drafts', 'versions', 'meta'], 'readwrite', { durability: 'strict' });
   const notesStore = tx.objectStore('notes');
   const draftsStore = tx.objectStore('drafts');
   const versionsStore = tx.objectStore('versions');
