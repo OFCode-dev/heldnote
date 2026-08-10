@@ -1,2 +1,10 @@
 # Packaged copies of the design docs, made for transfer. Regenerable.
 quick-keep-notepad-spec.zip
+
+# Internal working material — kept on disk, deliberately not shipped.
+# The design spec, PRD, ADR, store-api contract, brand brief and the
+# implementation plan live here; they are the record of why the code is
+# shaped this way, but they are not part of the product.
+.claude/
+docs/
+.superpowers/
