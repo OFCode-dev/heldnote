@@ -40,17 +40,33 @@ test('openDb resolves version-error when the requested version is older than the
   indexedDB.deleteDatabase(name);
 });
 
-test('openDb resolves blocked when an older connection is still open at a higher requested version, and that connection gets versionchange', async () => {
+test('openDb releases the connection on versionchange, so a newer open is not left blocked', async () => {
+  // db.js's onversionchange handler calls db.close() synchronously, which is
+  // an intentional design choice: it lets a newer connection's upgrade
+  // proceed immediately instead of sitting in the 'blocked' state. That
+  // means, on a real browser, the second open below resolves 'ok' (not
+  // 'blocked') as soon as the first connection releases its lock. What this
+  // test actually needs to verify is that the release really happens: the
+  // first connection receives versionchange, the second connection's open
+  // is not left hanging, and the first connection is unusable afterwards.
   const name = freshDbName();
   let versionChangeFired = false;
   const first = await openDb({ name, version: 1, onVersionChange: () => { versionChangeFired = true; } });
   assert(first.outcome === 'ok');
 
-  const second = await withTimeout(openDb({ name, version: 2 }), 2000, 'openDb({version:2}) never resolved blocked');
-  assert(second.outcome === 'blocked', `expected blocked, got ${second.outcome}`);
+  const second = await withTimeout(openDb({ name, version: 2 }), 2000, 'openDb({version:2}) never resolved');
+  assert(second.outcome === 'ok', `expected ok, got ${second.outcome}`);
   assert(versionChangeFired, 'expected the first connection to receive versionchange');
 
-  first.db.close();
+  let closedAfterVersionChange = false;
+  try {
+    first.db.transaction(['meta'], 'readonly');
+  } catch (_e) {
+    closedAfterVersionChange = true;
+  }
+  assert(closedAfterVersionChange, 'expected the original connection to be closed after versionchange');
+
+  second.db.close();
   indexedDB.deleteDatabase(name);
 });
 
