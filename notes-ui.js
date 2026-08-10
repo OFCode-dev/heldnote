@@ -62,15 +62,14 @@ export function renderNotesPanel(container, { onSelect, onImportComplete, onNote
         const restoreButton = document.createElement('button');
         restoreButton.textContent = t('trash.restore');
         restoreButton.addEventListener('click', async () => {
-          await store.restoreNote(note.id);
-          refresh();
+          if (await runNoteAction(() => store.restoreNote(note.id))) refresh();
         });
 
         const purgeButton = document.createElement('button');
         purgeButton.textContent = t('trash.deletePermanently');
         purgeButton.addEventListener('click', async () => {
           if (!window.confirm(t('trash.deleteConfirm'))) return;
-          await store.purgeNote(note.id);
+          if (!(await runNoteAction(() => store.purgeNote(note.id)))) return;
           if (onNoteDeleted) onNoteDeleted(note.id);
           refresh();
         });
@@ -146,6 +145,31 @@ export function renderNotesPanel(container, { onSelect, onImportComplete, onNote
     backupStatus.textContent = message;
   }
 
+  // store-api.md: "Callers branch on `code`; they never parse a message."
+  // Only invalid-import means the file is at fault — reporting a storage
+  // failure as "not a valid backup" blames the user's file for something it
+  // did not do, during the one destructive operation in the app.
+  function backupErrorMessage(error, fileScopedKey) {
+    if (error && error.code === 'invalid-import') return t(fileScopedKey);
+    if (error && error.code === 'quota-exceeded') return t('backup.errorQuota');
+    return t('backup.errorStorage');
+  }
+
+  // Every store call behind a button needs this. A rejection with no handler
+  // is a click that visibly does nothing — the same silent-failure class the
+  // editor was just fixed for, here on the irreversible action (purge) and
+  // the only recovery path (restore).
+  async function runNoteAction(work) {
+    try {
+      await work();
+      return true;
+    } catch (error) {
+      console.error('heldnote: note action failed', error);
+      showBackupStatus(backupErrorMessage(error, 'backup.errorStorage'));
+      return false;
+    }
+  }
+
   function backupFileName() {
     const date = new Date().toISOString().slice(0, 10);
     return `heldnote-backup-${date}.json`;
@@ -208,10 +232,12 @@ export function renderNotesPanel(container, { onSelect, onImportComplete, onNote
     } catch (error) {
       // importAll rejects with code 'invalid-import' for a malformed file
       // (bad JSON, wrong shape, unsupported schemaVersion, ...) without a
-      // partial write; any other rejection is surfaced the same honest way
-      // rather than swallowed.
+      // partial write — that is the only case where the file is at fault.
+      // storage-unavailable and quota-exceeded reach here too, and calling
+      // those "not a valid backup" would blame the file for something it did
+      // not do, right after the user agreed to a destructive replace.
       console.error('heldnote: import failed', error);
-      showBackupStatus(t('backup.importError'));
+      showBackupStatus(backupErrorMessage(error, 'backup.importError'));
     }
   });
 

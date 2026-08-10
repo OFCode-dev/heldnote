@@ -53,7 +53,14 @@ function addNotice(message, tone = 'error') {
 // design is explicit that such a probe must never be read as one.
 function isSafari() {
   const ua = navigator.userAgent || '';
-  return /Safari/.test(ua) && !/Chrome|Chromium|Edg/.test(ua);
+  if (!/Safari/.test(ua) || /Chrome|Chromium|Edg/.test(ua)) return false;
+  // An installed Home Screen / Dock web app is the one documented exemption:
+  // its storage is separate from ordinary Safari's, so the notice there would
+  // be a false alarm rather than a missed warning. navigator.standalone is a
+  // declarative property — reading it is not the write probe the design
+  // forbids as proof of durability.
+  if (navigator.standalone === true) return false;
+  return true;
 }
 
 function renderStatus(event) {
