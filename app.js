@@ -1,7 +1,7 @@
 // app.js
 import * as store from './store.js';
 import { t, setLanguage, detectLanguage } from './i18n.js';
-import { renderNotesPanel } from './notes-ui.js';
+import { renderNotesPanel, BRAND_MARK } from './notes-ui.js';
 import { renderEditor } from './editor.js';
 import { renderHistoryPanel } from './history-ui.js';
 
@@ -143,28 +143,27 @@ async function boot() {
   }
 
   let activeEditor = null;
+  // History is closed by default (brand brief §6: "Version panel: closed by
+  // default"); the preference persists for the session, so switching notes
+  // keeps whichever state the user last chose.
+  let historyOpen = false;
 
-  function openEditor(id) {
-    currentNoteId = id;
-    currentNoteRev = 0;
-    if (activeEditor) activeEditor.destroy();
-    activeEditor = renderEditor(document.getElementById('editor-panel'), id, {
-      onRevChange: (rev) => { currentNoteRev = rev; },
-      onTitleChange: () => { if (notesPanelHandle) notesPanelHandle.refresh(); },
-      onError: addNotice,
-    });
+  function toggleTheme() {
+    const root = document.documentElement;
+    const systemPrefersLight = window.matchMedia('(prefers-color-scheme: light)').matches;
+    const current = root.dataset.theme || (systemPrefersLight ? 'light' : 'dark');
+    const next = current === 'dark' ? 'light' : 'dark';
+    root.dataset.theme = next;
+    try { localStorage.setItem('heldnote-theme', next); } catch (e) { /* non-fatal */ }
   }
 
-  function closeEditor() {
-    currentNoteId = null;
-    currentNoteRev = 0;
-    if (activeEditor) { activeEditor.destroy(); activeEditor = null; }
-    document.getElementById('editor-panel').innerHTML = '';
-    document.getElementById('history-panel').hidden = true;
-  }
-
-  function selectNote(id) {
-    openEditor(id);
+  function renderHistoryForCurrent() {
+    const panel = document.getElementById('history-panel');
+    if (!historyOpen || !currentNoteId) {
+      panel.hidden = true;
+      return;
+    }
+    const id = currentNoteId;
     // A restore changes the note's draft text underneath the editor, so the
     // editor must reload from store rather than keep showing the pre-restore
     // text; re-opening it (same as a fresh selection) is the simplest way to
@@ -177,9 +176,58 @@ async function boot() {
     // before touching the editor — otherwise a slow retry for note A that
     // resolves after the user has already switched to note B would yank B's
     // editor out from under them and silently swap in A's.
-    renderHistoryPanel(document.getElementById('history-panel'), id, {
+    renderHistoryPanel(panel, id, {
       onRestore: () => { if (id === currentNoteId) openEditor(id); },
     });
+  }
+
+  function openEditor(id) {
+    currentNoteId = id;
+    currentNoteRev = 0;
+    if (activeEditor) activeEditor.destroy();
+    activeEditor = renderEditor(document.getElementById('editor-panel'), id, {
+      onRevChange: (rev) => { currentNoteRev = rev; },
+      onTitleChange: () => { if (notesPanelHandle) notesPanelHandle.refresh(); },
+      onError: addNotice,
+      historyOpen,
+      onToggleHistory: () => {
+        historyOpen = !historyOpen;
+        renderHistoryForCurrent();
+        return historyOpen;
+      },
+    });
+    renderHistoryForCurrent();
+  }
+
+  function renderEmptyState() {
+    const panel = document.getElementById('editor-panel');
+    panel.innerHTML = `
+      <div class="editor-empty">
+        ${BRAND_MARK.replace('width="22" height="22"', 'width="44" height="44"')}
+        <h2>${t('empty.title')}</h2>
+        <p>${t('empty.body')}</p>
+        <button id="empty-new-note">${t('empty.cta')}</button>
+      </div>
+    `;
+    panel.querySelector('#empty-new-note').addEventListener('click', async () => {
+      const note = await store.createNote();
+      if (notesPanelHandle) notesPanelHandle.refresh();
+      selectNote(note.id);
+    });
+  }
+
+  function closeEditor() {
+    currentNoteId = null;
+    currentNoteRev = 0;
+    if (activeEditor) { activeEditor.destroy(); activeEditor = null; }
+    renderEmptyState();
+    document.getElementById('history-panel').hidden = true;
+    if (notesPanelHandle) notesPanelHandle.setActive(null);
+  }
+
+  function selectNote(id) {
+    openEditor(id);
+    if (notesPanelHandle) notesPanelHandle.setActive(id);
   }
 
   // Called after any import completes. 'replace' wipes the database
@@ -208,7 +256,22 @@ async function boot() {
     onSelect: selectNote,
     onImportComplete: handleImportComplete,
     onNoteDeleted: handleNoteDeleted,
+    onToggleTheme: toggleTheme,
   });
+
+  // First paint: an invitation to act, never a blank pane. If notes already
+  // exist, open the most recent one so returning users land back in their
+  // writing; on a truly first visit, show the empty state.
+  try {
+    const existing = await store.listNotes({ limit: 1 });
+    if (existing.length > 0) {
+      selectNote(existing[0].id);
+    } else {
+      renderEmptyState();
+    }
+  } catch (error) {
+    renderEmptyState();
+  }
 
   window.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'hidden' && currentNoteId) {

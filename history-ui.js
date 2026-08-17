@@ -58,6 +58,13 @@ export function renderHistoryPanel(container, noteId, { onRestore } = {}) {
   async function refresh() {
     const versions = await store.listVersions(noteId, {});
     list.innerHTML = '';
+    if (versions.length === 0) {
+      const li = document.createElement('li');
+      li.className = 'version-empty';
+      li.textContent = t('history.empty');
+      list.appendChild(li);
+      return;
+    }
     for (const info of versions) {
       const li = document.createElement('li');
       const button = document.createElement('button');

@@ -1,22 +1,54 @@
 // notes-ui.js
 import * as store from './store.js';
-import { t } from './i18n.js';
+import { t, getLanguage } from './i18n.js';
 
-export function renderNotesPanel(container, { onSelect, onImportComplete, onNoteDeleted }) {
+// The continuous-return mark from brand-brief.md §2: one uninterrupted line
+// forming a lowercase h that curves back on itself. Inline so it needs no
+// asset request and inherits its stroke color from CSS.
+export const BRAND_MARK = `<svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true">
+  <path class="brand-mark-stroke" d="M6 4v16M6 11c0-3 3-4.5 6-4.5s6 1.5 6 4.5v6c0 2-1.5 3-3 3"
+    fill="none" stroke-width="2.4" stroke-linecap="round"/>
+</svg>`;
+
+function formatRelativeTime(timestamp) {
+  if (!timestamp) return '';
+  const diffMs = timestamp - Date.now();
+  const abs = Math.abs(diffMs);
+  const rtf = new Intl.RelativeTimeFormat(getLanguage(), { numeric: 'auto' });
+  if (abs < 60_000) return rtf.format(Math.round(diffMs / 1000), 'second');
+  if (abs < 3_600_000) return rtf.format(Math.round(diffMs / 60_000), 'minute');
+  if (abs < 86_400_000) return rtf.format(Math.round(diffMs / 3_600_000), 'hour');
+  if (abs < 7 * 86_400_000) return rtf.format(Math.round(diffMs / 86_400_000), 'day');
+  return new Date(timestamp).toLocaleDateString(getLanguage());
+}
+
+export function renderNotesPanel(container, { onSelect, onImportComplete, onNoteDeleted, onToggleTheme }) {
   container.innerHTML = `
-    <button id="new-note">${t('notes.new')}</button>
-    <input id="search" type="search" aria-label="${t('notes.searchLabel')}">
-    <button id="toggle-trash"></button>
+    <header id="brand">
+      ${BRAND_MARK}
+      <span class="wordmark">heldnote</span>
+      <span class="brand-spacer"></span>
+      <button id="theme-toggle" aria-label="${t('theme.toggle')}" title="${t('theme.toggle')}">◐</button>
+    </header>
+    <div class="sidebar-actions">
+      <button id="new-note">${t('notes.new')}</button>
+      <input id="search" type="search" placeholder="${t('notes.searchPlaceholder')}" aria-label="${t('notes.searchLabel')}">
+    </div>
     <ul id="note-list"></ul>
     <div id="undo-banner" hidden></div>
-    <section id="backup-panel">
-      <h2>${t('backup.title')}</h2>
-      <button id="export-backup">${t('backup.export')}</button>
-      <button id="import-copy">${t('backup.importCopy')}</button>
-      <button id="import-replace">${t('backup.importReplace')}</button>
-      <input id="import-file" type="file" accept="application/json" hidden>
-      <div id="backup-status" role="status"></div>
-    </section>
+    <div class="sidebar-footer">
+      <button id="toggle-trash"></button>
+      <details id="backup-panel">
+        <summary>${t('backup.title')}</summary>
+        <div class="backup-actions">
+          <button id="export-backup">${t('backup.export')}</button>
+          <button id="import-copy">${t('backup.importCopy')}</button>
+          <button id="import-replace">${t('backup.importReplace')}</button>
+        </div>
+        <input id="import-file" type="file" accept="application/json" hidden>
+        <div id="backup-status" role="status"></div>
+      </details>
+    </div>
   `;
 
   const list = container.querySelector('#note-list');
@@ -24,6 +56,11 @@ export function renderNotesPanel(container, { onSelect, onImportComplete, onNote
   const toggleTrashButton = container.querySelector('#toggle-trash');
   let lastTrashedId = null;
   let viewingTrash = false;
+  let activeId = null;
+
+  container.querySelector('#theme-toggle').addEventListener('click', () => {
+    if (onToggleTheme) onToggleTheme();
+  });
 
   function updateToggleLabel() {
     toggleTrashButton.textContent = viewingTrash ? t('trash.backToNotes') : t('trash.viewTrash');
@@ -36,6 +73,96 @@ export function renderNotesPanel(container, { onSelect, onImportComplete, onNote
     refresh();
   });
 
+  function emptyRow(message) {
+    const li = document.createElement('li');
+    li.className = 'list-empty';
+    li.textContent = message;
+    return li;
+  }
+
+  function headingRow(label) {
+    const li = document.createElement('li');
+    li.className = 'list-heading';
+    li.setAttribute('aria-hidden', 'true');
+    li.textContent = label;
+    return li;
+  }
+
+  function noteRow(note) {
+    const li = document.createElement('li');
+    li.className = 'note-item';
+    if (note.pinned) li.classList.add('is-pinned');
+    if (note.id === activeId) li.classList.add('is-active');
+
+    const openButton = document.createElement('button');
+    openButton.className = 'note-open';
+    const title = document.createElement('span');
+    title.className = 'note-title';
+    title.textContent = note.title || t('note.untitled');
+    const time = document.createElement('span');
+    time.className = 'note-time';
+    time.textContent = formatRelativeTime(note.updatedAt);
+    openButton.append(title, time);
+    openButton.addEventListener('click', () => onSelect(note.id));
+
+    const actions = document.createElement('div');
+    actions.className = 'note-actions';
+
+    const pinButton = document.createElement('button');
+    pinButton.className = 'icon-button action-pin';
+    pinButton.textContent = note.pinned ? '★' : '☆';
+    pinButton.setAttribute('aria-label', note.pinned ? t('notes.unpin') : t('notes.pin'));
+    pinButton.title = note.pinned ? t('notes.unpin') : t('notes.pin');
+    pinButton.addEventListener('click', async () => {
+      await store.setPinned(note.id, !note.pinned);
+      refresh();
+    });
+
+    const trashButton = document.createElement('button');
+    trashButton.className = 'icon-button action-trash';
+    trashButton.textContent = '🗑';
+    trashButton.setAttribute('aria-label', t('trash.move'));
+    trashButton.title = t('trash.move');
+    trashButton.addEventListener('click', async () => {
+      await store.trashNote(note.id);
+      lastTrashedId = note.id;
+      showUndo();
+      refresh();
+    });
+
+    actions.append(pinButton, trashButton);
+    li.append(openButton, actions);
+    return li;
+  }
+
+  function trashRow(note) {
+    const li = document.createElement('li');
+    li.className = 'note-item trash-row';
+
+    const label = document.createElement('span');
+    label.className = 'note-title';
+    label.textContent = note.title || t('note.untitled');
+
+    const restoreButton = document.createElement('button');
+    restoreButton.textContent = t('trash.restore');
+    restoreButton.addEventListener('click', async () => {
+      if (await runNoteAction(() => store.restoreNote(note.id))) refresh();
+    });
+
+    const purgeButton = document.createElement('button');
+    purgeButton.className = 'trash-purge';
+    purgeButton.textContent = t('trash.deletePermanently');
+    purgeButton.addEventListener('click', async () => {
+      if (!window.confirm(t('trash.deleteConfirm'))) return;
+      if (!(await runNoteAction(() => store.purgeNote(note.id)))) return;
+      if (onNoteDeleted) onNoteDeleted(note.id);
+      refresh();
+    });
+
+    li.append(label, restoreButton, purgeButton);
+    return li;
+  }
+
   async function refresh() {
     const query = searchInput.value.trim() || undefined;
     const notes = await store.listNotes({ query, includeTrashed: viewingTrash });
@@ -45,61 +172,29 @@ export function renderNotesPanel(container, { onSelect, onImportComplete, onNote
     const visible = viewingTrash ? notes.filter((note) => note.deletedAt != null) : notes;
     list.innerHTML = '';
 
-    if (viewingTrash && visible.length === 0) {
-      const li = document.createElement('li');
-      li.textContent = t('trash.empty');
-      list.appendChild(li);
+    if (viewingTrash) {
+      if (visible.length === 0) {
+        list.appendChild(emptyRow(t('trash.empty')));
+        return;
+      }
+      for (const note of visible) list.appendChild(trashRow(note));
       return;
     }
 
-    for (const note of visible) {
-      const li = document.createElement('li');
+    if (visible.length === 0) {
+      list.appendChild(emptyRow(query ? t('notes.noResults') : t('notes.empty')));
+      return;
+    }
 
-      if (viewingTrash) {
-        const label = document.createElement('span');
-        label.textContent = note.title || t('note.untitled');
-
-        const restoreButton = document.createElement('button');
-        restoreButton.textContent = t('trash.restore');
-        restoreButton.addEventListener('click', async () => {
-          if (await runNoteAction(() => store.restoreNote(note.id))) refresh();
-        });
-
-        const purgeButton = document.createElement('button');
-        purgeButton.textContent = t('trash.deletePermanently');
-        purgeButton.addEventListener('click', async () => {
-          if (!window.confirm(t('trash.deleteConfirm'))) return;
-          if (!(await runNoteAction(() => store.purgeNote(note.id)))) return;
-          if (onNoteDeleted) onNoteDeleted(note.id);
-          refresh();
-        });
-
-        li.append(label, restoreButton, purgeButton);
-      } else {
-        const button = document.createElement('button');
-        button.textContent = `${note.pinned ? '📌 ' : ''}${note.title || t('note.untitled')}`;
-        button.addEventListener('click', () => onSelect(note.id));
-
-        const pinButton = document.createElement('button');
-        pinButton.textContent = note.pinned ? t('notes.unpin') : t('notes.pin');
-        pinButton.addEventListener('click', async () => {
-          await store.setPinned(note.id, !note.pinned);
-          refresh();
-        });
-
-        const trashButton = document.createElement('button');
-        trashButton.textContent = t('trash.move');
-        trashButton.addEventListener('click', async () => {
-          await store.trashNote(note.id);
-          lastTrashedId = note.id;
-          showUndo();
-          refresh();
-        });
-
-        li.append(button, pinButton, trashButton);
-      }
-
-      list.appendChild(li);
+    const pinned = visible.filter((note) => note.pinned);
+    const rest = visible.filter((note) => !note.pinned);
+    if (pinned.length > 0) {
+      list.appendChild(headingRow(t('notes.pinned')));
+      for (const note of pinned) list.appendChild(noteRow(note));
+    }
+    if (rest.length > 0) {
+      if (pinned.length > 0) list.appendChild(headingRow(t('notes.recent')));
+      for (const note of rest) list.appendChild(noteRow(note));
     }
   }
 
@@ -107,14 +202,16 @@ export function renderNotesPanel(container, { onSelect, onImportComplete, onNote
     const banner = container.querySelector('#undo-banner');
     banner.hidden = false;
     banner.innerHTML = '';
+    const label = document.createElement('span');
+    label.textContent = t('trash.undoLabel');
     const undoButton = document.createElement('button');
-    undoButton.textContent = t('trash.restore');
+    undoButton.textContent = t('trash.undo');
     undoButton.addEventListener('click', async () => {
       if (lastTrashedId) await store.restoreNote(lastTrashedId);
       banner.hidden = true;
       refresh();
     });
-    banner.appendChild(undoButton);
+    banner.append(label, undoButton);
   }
 
   container.querySelector('#new-note').addEventListener('click', async () => {
@@ -242,5 +339,11 @@ export function renderNotesPanel(container, { onSelect, onImportComplete, onNote
   });
 
   refresh();
-  return { refresh };
+  return {
+    refresh,
+    setActive(id) {
+      activeId = id;
+      refresh();
+    },
+  };
 }
