@@ -65,10 +65,27 @@ export function renderHistoryPanel(container, noteId, { onRestore } = {}) {
       list.appendChild(li);
       return;
     }
+    const newestSeq = versions.reduce((max, v) => Math.max(max, v.seq), -Infinity);
     for (const info of versions) {
       const li = document.createElement('li');
       const button = document.createElement('button');
-      button.textContent = new Date(info.at).toLocaleString();
+      const when = document.createElement('span');
+      when.className = 'version-when';
+      when.textContent = info.seq === newestSeq
+        ? `${new Date(info.at).toLocaleString()} · ${t('history.latest')}`
+        : new Date(info.at).toLocaleString();
+      button.appendChild(when);
+      // A bare timestamp says nothing about WHAT a version contains; a first
+      // line makes the list scannable. One extra read per row, bounded by
+      // the per-note history cap.
+      store.getVersion(noteId, info.seq).then((full) => {
+        const firstLine = (full.text.split('\n').find((line) => line.trim()) || '').slice(0, 48);
+        if (!firstLine) return;
+        const snippet = document.createElement('span');
+        snippet.className = 'version-snippet';
+        snippet.textContent = firstLine;
+        button.appendChild(snippet);
+      }).catch(() => { /* the row still works as a timestamp */ });
       button.setAttribute('aria-label', t('history.preview'));
       button.addEventListener('click', async () => {
         const token = ++previewToken;

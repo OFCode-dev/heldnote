@@ -19,11 +19,37 @@ const BACKUP_FILE_NAME = 'heldnote-backup.json';
 const GIS_SRC = 'https://accounts.google.com/gsi/client';
 const CONNECTED_KEY = 'heldnote-drive-connected';
 const LAST_BACKUP_KEY = 'heldnote-drive-last-backup';
+const LAST_ERROR_KEY = 'heldnote-drive-last-error';
+const TOKEN_KEY = 'heldnote-drive-token';
 
 let tokenClient = null;
 let accessToken = null;
 let tokenExpiresAt = 0;
 let gisLoadPromise = null;
+
+// The access token survives reloads (~1h lifetime). Without this, every page
+// load forgot the session and every backup/restore marched the user through
+// Google's account chooser again — the single loudest complaint about v1 of
+// this feature. Scope is drive.appdata only (an app-private folder), and the
+// page loads no third-party scripts besides Google's own GIS client, which
+// bounds what a stored token could leak.
+try {
+  const stored = JSON.parse(localStorage.getItem(TOKEN_KEY) || 'null');
+  if (stored && typeof stored.token === 'string' && Number.isFinite(stored.expiresAt) && stored.expiresAt > Date.now() + 60_000) {
+    accessToken = stored.token;
+    tokenExpiresAt = stored.expiresAt;
+  }
+} catch (e) { /* fall through to a fresh sign-in */ }
+
+function persistToken() {
+  try { localStorage.setItem(TOKEN_KEY, JSON.stringify({ token: accessToken, expiresAt: tokenExpiresAt })); } catch (e) { /* non-fatal */ }
+}
+
+function clearToken() {
+  accessToken = null;
+  tokenExpiresAt = 0;
+  try { localStorage.removeItem(TOKEN_KEY); } catch (e) { /* non-fatal */ }
+}
 
 export function isConfigured() {
   return typeof GOOGLE_DRIVE_CLIENT_ID === 'string' && GOOGLE_DRIVE_CLIENT_ID.length > 0;
@@ -38,6 +64,23 @@ export function lastBackupAt() {
     const value = Number(localStorage.getItem(LAST_BACKUP_KEY));
     return Number.isFinite(value) && value > 0 ? value : null;
   } catch (e) { return null; }
+}
+
+// A failure that happened AFTER the last successful backup must survive a
+// reload: QA found the footer cheerfully showing an old "Last backup" time
+// while every attempt since had failed — a user would believe they are
+// backed up when they are not.
+export function lastFailure() {
+  try {
+    const stored = JSON.parse(localStorage.getItem(LAST_ERROR_KEY) || 'null');
+    if (!stored || !Number.isFinite(stored.at)) return null;
+    const backupAt = lastBackupAt();
+    return backupAt && backupAt >= stored.at ? null : stored;
+  } catch (e) { return null; }
+}
+
+export function recordFailure(code) {
+  try { localStorage.setItem(LAST_ERROR_KEY, JSON.stringify({ at: Date.now(), code: String(code || 'unknown') })); } catch (e) { /* non-fatal */ }
 }
 
 function setConnected(flag) {
@@ -117,6 +160,7 @@ async function getToken({ forceConsent = false } = {}) {
       }
       accessToken = response.access_token;
       tokenExpiresAt = Date.now() + (Number(response.expires_in) || 3600) * 1000;
+      persistToken();
       finishResolve(accessToken);
     };
     tokenClient.error_callback = (error) => {
@@ -165,7 +209,7 @@ async function withToken(work, { silent = false } = {}) {
     return await work(token);
   } catch (error) {
     if (error && error.code === 'auth-expired') {
-      accessToken = null;
+      clearToken();
       // In silent (background) mode a re-auth could pop UI mid-typing; give
       // up quietly instead — the next manual action re-authenticates.
       if (silent) throw driveError('auth-needed', 'token expired during background upload');
@@ -183,8 +227,7 @@ export async function connect() {
 
 export function disconnect() {
   const token = accessToken;
-  accessToken = null;
-  tokenExpiresAt = 0;
+  clearToken();
   setConnected(false);
   // Best-effort revoke; local state is already cleared either way.
   if (token && window.google && window.google.accounts && window.google.accounts.oauth2) {
@@ -214,7 +257,10 @@ export async function uploadBackup(blob, { silent = false } = {}) {
       });
     }
     const now = Date.now();
-    try { localStorage.setItem(LAST_BACKUP_KEY, String(now)); } catch (e) { /* cosmetic */ }
+    try {
+      localStorage.setItem(LAST_BACKUP_KEY, String(now));
+      localStorage.removeItem(LAST_ERROR_KEY);
+    } catch (e) { /* cosmetic */ }
     setConnected(true);
     return now;
   }, { silent });

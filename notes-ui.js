@@ -250,12 +250,46 @@ export function renderNotesPanel(container, { onSelect, onImportComplete, onNote
     undoTimer = setTimeout(hideUndo, 8000);
   }
 
-  container.querySelector('#new-note').addEventListener('click', async () => {
-    viewingTrash = false;
-    updateToggleLabel();
-    const note = await store.createNote();
-    await refresh();
-    onSelect(note.id);
+  const newNoteButton = container.querySelector('#new-note');
+  newNoteButton.addEventListener('click', async () => {
+    // Drop focus synchronously: while createNote() is in flight, a focused
+    // button turns every Space/Enter the user types into another click —
+    // QA created four junk notes with three spacebar presses this way.
+    newNoteButton.blur();
+    newNoteButton.disabled = true;
+    // Even with the editor focusing the moment it renders, createNote()'s
+    // round-trip leaves a few-millisecond gap where a fast typist's first
+    // character lands nowhere (QA: "Grocery list" arrived as "rocery list").
+    // Capture printable keys during exactly that gap and replay them into
+    // the editor once it exists; preventDefault doubles as the guarantee
+    // that Space/Enter cannot re-activate anything else meanwhile.
+    const typedEarly = [];
+    const captureEarlyTyping = (event) => {
+      if (event.ctrlKey || event.metaKey || event.altKey) return;
+      if (event.key === 'Enter') { typedEarly.push('\n'); event.preventDefault(); }
+      else if (event.key.length === 1) { typedEarly.push(event.key); event.preventDefault(); }
+    };
+    document.addEventListener('keydown', captureEarlyTyping, true);
+    try {
+      viewingTrash = false;
+      updateToggleLabel();
+      const note = await store.createNote();
+      // Select first, refresh after: the editor (and its focus) must not
+      // wait for the full list repaint.
+      onSelect(note.id);
+      document.removeEventListener('keydown', captureEarlyTyping, true);
+      if (typedEarly.length > 0) {
+        const editorEl = document.getElementById('editor');
+        if (editorEl) {
+          editorEl.value += typedEarly.join('');
+          editorEl.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+      }
+      refresh();
+    } finally {
+      document.removeEventListener('keydown', captureEarlyTyping, true);
+      newNoteButton.disabled = false;
+    }
   });
 
   searchInput.addEventListener('input', () => refresh());
@@ -416,9 +450,16 @@ export function renderNotesPanel(container, { onSelect, onImportComplete, onNote
         driveStatus.textContent = message;
       } else if (connected) {
         const at = driveSync.lastBackupAt();
-        driveStatus.textContent = at
-          ? `${t('drive.lastBackup')}: ${new Date(at).toLocaleString(getLanguage())}`
-          : t('drive.noBackupYet');
+        const failure = driveSync.lastFailure();
+        if (failure) {
+          // Never show a reassuring old "Last backup" time while attempts
+          // since then have been failing.
+          driveStatus.textContent = `${t('drive.failedSince')} (${new Date(failure.at).toLocaleTimeString(getLanguage())})`;
+        } else {
+          driveStatus.textContent = at
+            ? `${t('drive.lastBackup')}: ${new Date(at).toLocaleString(getLanguage())}`
+            : t('drive.noBackupYet');
+        }
       } else {
         driveStatus.textContent = `${t('drive.notConnected')} ${t('drive.notConnectedHint')}`;
       }
@@ -432,6 +473,7 @@ export function renderNotesPanel(container, { onSelect, onImportComplete, onNote
         renderDriveState(message != null ? message : null);
       } catch (error) {
         console.error('heldnote: drive action failed', error);
+        driveSync.recordFailure(error && error.code);
         renderDriveState(driveErrorMessage(error));
       } finally {
         button.disabled = false;
@@ -455,9 +497,13 @@ export function renderNotesPanel(container, { onSelect, onImportComplete, onNote
     store.subscribe((event) => {
       if (event.type !== 'saved') return;
       driveSync.noteSaved(() => store.exportAll(), (at, error) => {
-        if (error && error.code === 'auth-needed') renderDriveState(t('drive.authNeeded'));
-        else if (error) renderDriveState(driveErrorMessage(error));
-        else renderDriveState(null);
+        if (error && error.code === 'auth-needed') { renderDriveState(t('drive.authNeeded')); return; }
+        if (error) {
+          driveSync.recordFailure(error.code);
+          renderDriveState(driveErrorMessage(error));
+          return;
+        }
+        renderDriveState(null);
       });
     });
 

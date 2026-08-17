@@ -123,6 +123,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, summary:focus
   flex-direction: column;
   background: var(--panel-bg);
   border-right: 1px solid var(--border);
+  position: relative; /* anchors the undo-banner overlay */
 }
 
 #brand {
@@ -285,8 +286,14 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, summary:focus
 .note-item.trash-row .trash-purge:hover { border-color: var(--coral-500); color: var(--coral-500); }
 
 #undo-banner[hidden] { display: none; }
+/* Overlay, not in-flow: an in-flow banner shifted the note rows under the
+   cursor exactly while the user reached for Undo, and stole list height. */
 #undo-banner {
-  margin: 0.4rem 0.75rem;
+  position: absolute;
+  left: 0.6rem;
+  right: 0.6rem;
+  bottom: 0.6rem;
+  z-index: 5;
   padding: 0.5rem 0.65rem;
   display: flex;
   align-items: center;
@@ -295,6 +302,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, summary:focus
   background: var(--elevated-bg);
   border: 1px solid var(--border);
   border-radius: var(--radius-control);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
 }
 #undo-banner button {
   border: 1px solid var(--border);
@@ -478,6 +486,17 @@ textarea#editor:focus-visible { outline: none; }
 }
 #version-list button:hover { background: var(--hover-bg); color: var(--text); }
 #version-list .version-empty { color: var(--text-secondary); font-size: 13px; padding: 0.4rem 0.55rem; }
+#version-list .version-when { display: block; }
+#version-list .version-snippet {
+  display: block;
+  margin-top: 1px;
+  font-size: 12px;
+  color: var(--text);
+  opacity: 0.75;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 
 #version-preview { margin-top: 0.75rem; }
 #version-preview pre {
@@ -569,6 +588,15 @@ textarea#editor:focus-visible { outline: none; }
     border-bottom: 1px solid var(--border);
   }
   #note-list { flex: none; min-height: 0; overflow-y: visible; }
+  /* New note + Search stay reachable while the panel scrolls — QA lost both
+     off the top of the 46vh sidebar. */
+  .sidebar-actions {
+    position: sticky;
+    top: 0;
+    z-index: 3;
+    background: var(--panel-bg);
+    padding-top: 0.5rem;
+  }
   #editor-panel { grid-column: 1; grid-row: 3; }
   /* History becomes a bottom sheet so the editor (and its History toggle,
      the only way back) stays visible above it. */

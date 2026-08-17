@@ -30,6 +30,13 @@ export function renderEditor(container, noteId, { onRevChange, onTitleChange, on
   const historyButton = container.querySelector('#toggle-history');
   const countsEl = document.getElementById('status-counts');
 
+  // Focus synchronously, before the note text loads. QA proved that any
+  // async gap here turns immediate typing into disaster: with focus still
+  // on the New note button, Space/Enter re-clicked it (junk notes) and
+  // every other character vanished. An empty focused textarea accepts those
+  // first keystrokes instead; the load below is careful not to clobber them.
+  textarea.focus();
+
   historyButton.addEventListener('click', () => {
     if (!onToggleHistory) return;
     const nowOpen = onToggleHistory();
@@ -61,15 +68,19 @@ export function renderEditor(container, noteId, { onRevChange, onTitleChange, on
 
   store.getNote(noteId).then((note) => {
     if (destroyed) return;
-    textarea.value = note.text;
-    renderHeading(note.text);
-    renderCounts(note.text);
-    textarea.focus();
-    // Seeded, not reported: the note list already shows this title from the
-    // selection that led here, so the first paint must not trigger a
-    // redundant refresh — only a later, actual edit should.
-    lastReportedTitle = deriveTitle(note.text);
-    if (onRevChange) onRevChange(note.localRev);
+    // Anything typed during the load already went through onInput and is
+    // saved as this note's draft, so for a brand-new (empty) note the typed
+    // text IS the newer truth — overwriting it with the stored '' would
+    // throw away the user's first sentence. Only an actually non-empty
+    // stored note replaces what is on screen.
+    const typedDuringLoad = textarea.value;
+    if (note.text || !typedDuringLoad) {
+      textarea.value = note.text;
+      renderHeading(note.text);
+      renderCounts(note.text);
+      lastReportedTitle = deriveTitle(note.text);
+      if (onRevChange) onRevChange(note.localRev);
+    }
   }).catch((error) => {
     if (destroyed) return;
     console.error('heldnote: could not load note', error);
