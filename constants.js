@@ -17,4 +17,4 @@ export const LIMITS = {
 // Google Drive backup (drive-sync.js). Empty string = feature hidden: the
 // Drive section of the backup panel only renders when a client id is set.
 // This is an OAuth *client* id — public by design, not a secret.
-export const GOOGLE_DRIVE_CLIENT_ID = '';
+export const GOOGLE_DRIVE_CLIENT_ID = '1038132081392-155mtbifsu9k7saa8umeanrgk4k9bgpn.apps.googleusercontent.com';
