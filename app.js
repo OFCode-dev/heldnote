@@ -7,6 +7,7 @@ import { renderHistoryPanel } from './history-ui.js';
 
 let currentNoteId = null;
 let currentNoteRev = 0; // set by Task 18's editor via onRevChange; flush() target for lifecycle events
+let savedRefreshTimer = null; // debounce for the note-list refresh on 'saved' events
 
 // Set once renderNotesPanel has run, so the note-changed subscriber below
 // (registered before the panel exists) can reach its `refresh()`.
@@ -71,6 +72,17 @@ function renderStatus(event) {
   if (event.type === 'saved') {
     revisionEl.className = 'state-saved';
     revisionEl.textContent = `${t('status.saved')} · ${new Date(event.completedAt).toLocaleTimeString()}`;
+    // The sidebar derives titles from what is persisted, so it can lag the
+    // editor mid-typing (QA: "the sidebar shows only the first letter").
+    // A durable save is the exact moment the persisted title catches up —
+    // refresh the list then, debounced so a burst of flushes is one repaint.
+    if (notesPanelHandle) {
+      if (savedRefreshTimer) clearTimeout(savedRefreshTimer);
+      savedRefreshTimer = setTimeout(() => {
+        savedRefreshTimer = null;
+        notesPanelHandle.refresh();
+      }, 400);
+    }
   } else if (event.type === 'saving') {
     revisionEl.className = '';
     revisionEl.textContent = t('status.saving');
@@ -124,12 +136,14 @@ async function boot() {
 
   store.subscribe(renderStatus);
 
-  // Render an honest retention state immediately rather than leaving the
-  // '—' placeholder until the first version commit (~2s after the first
-  // keystroke) — or forever, if quota pressure stops version commits before
-  // one ever lands. open()'s StoreStatus.retention is 'unknown' today, and
-  // 'unknown' is itself an honest, displayable answer.
-  renderStatus({ type: 'retention-changed', retention: status.retention });
+  // Only render retention at boot when it is a definitive answer. Painting
+  // "Browser retention: Unknown" on every load — for a product whose whole
+  // pitch is that notes stay put — reads as an alarm, then flickers to
+  // "Persistent" a moment later. The '—' placeholder is quieter than a
+  // scary word, and the real state arrives via retention-changed shortly.
+  if (status.retention && status.retention !== 'unknown') {
+    renderStatus({ type: 'retention-changed', retention: status.retention });
+  }
 
   if (!status.available) {
     addNotice(t(STORAGE_REASON_KEYS[status.reason] || 'error.storageUnavailable'));
@@ -263,9 +277,12 @@ async function boot() {
   // exist, open the most recent one so returning users land back in their
   // writing; on a truly first visit, show the empty state.
   try {
-    const existing = await store.listNotes({ limit: 1 });
+    const existing = await store.listNotes({});
     if (existing.length > 0) {
-      selectNote(existing[0].id);
+      // "Return anytime" means returning to where you left off: open the
+      // most recently edited note, not whichever pinned note sorts first.
+      const mostRecent = existing.reduce((best, note) => (note.updatedAt > best.updatedAt ? note : best));
+      selectNote(mostRecent.id);
     } else {
       renderEmptyState();
     }

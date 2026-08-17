@@ -508,6 +508,86 @@ test('import as copies assigns fresh note IDs and keeps the original notes', asy
   await store.close();
 });
 
+test('merge import of an own backup is a no-op: ids reconcile, nothing duplicates', async () => {
+  const dbName = `heldnote-test-${Date.now()}`;
+  await store.open({ dbName });
+  const note = await store.createNote();
+  const rev = store.saveDraft(note.id, 'merge me');
+  await store.flush(note.id, rev);
+  await store.commitVersion(note.id);
+
+  const blob = await store.exportAll();
+  const file = new File([blob], 'backup.json', { type: 'application/json' });
+
+  // Restoring your own backup twice must never multiply notes — this is the
+  // exact scenario that duplicated a real user's library under 'copy'.
+  for (let i = 0; i < 2; i++) {
+    const result = await store.importAll(file, { mode: 'merge' });
+    assertEquals(result.notesAdded, 0, 'an already-present note id must not be re-added');
+    assertEquals(result.versionsAdded, 0, 'an already-present [noteId, seq] must not be re-added');
+  }
+
+  const list = await store.listNotes({});
+  assertEquals(list.length, 1, 'merge must never duplicate an existing note');
+
+  await store.close();
+});
+
+test('merge import adds missing notes and missing version snapshots, and never touches local edits', async () => {
+  const dbName = `heldnote-test-${Date.now()}`;
+  await store.open({ dbName });
+  const keeper = await store.createNote();
+  const keeperRev = store.saveDraft(keeper.id, 'shared note');
+  await store.flush(keeper.id, keeperRev);
+  await store.commitVersion(keeper.id);
+  const missing = await store.createNote();
+  const missingRev = store.saveDraft(missing.id, 'only in the backup');
+  await store.flush(missing.id, missingRev);
+  await store.commitVersion(missing.id);
+
+  const blob = await store.exportAll();
+  const file = new File([blob], 'backup.json', { type: 'application/json' });
+
+  // Simulate divergence after the backup: one note is purged locally (exists
+  // only in the backup), the shared note gains a newer local edit.
+  await store.trashNote(missing.id);
+  await store.purgeNote(missing.id);
+  const newerRev = store.saveDraft(keeper.id, 'shared note, edited after the backup');
+  await store.flush(keeper.id, newerRev);
+
+  const result = await store.importAll(file, { mode: 'merge' });
+  assertEquals(result.notesAdded, 1, 'the note missing locally must come back under its own id');
+  assertEquals(result.notesCopied, 0);
+
+  const list = await store.listNotes({});
+  assertEquals(list.length, 2);
+  assert(list.some((n) => n.id === missing.id), 'the restored note keeps its original id');
+  const kept = await store.getNote(keeper.id);
+  assertEquals(kept.text, 'shared note, edited after the backup', 'merge must never overwrite a local edit');
+  const restored = await store.getNote(missing.id);
+  assertEquals(restored.text, 'only in the backup');
+
+  await store.close();
+});
+
+test('memory mode: merge import reconciles by id without duplicating', async () => {
+  await openInMemoryMode();
+  const note = await store.createNote();
+  const rev = store.saveDraft(note.id, 'memory merge');
+  await store.flush(note.id, rev);
+  await store.commitVersion(note.id);
+
+  const blob = await store.exportAll();
+  const payload = JSON.parse(await blob.text());
+  const result = await store.importAll(new File([JSON.stringify(payload)], 'backup.json'), { mode: 'merge' });
+  assertEquals(result.notesAdded, 0);
+  assertEquals(result.versionsAdded, 0);
+  const list = await store.listNotes({});
+  assertEquals(list.length, 1, 'memory merge must not duplicate either');
+
+  await store.close();
+});
+
 test('importing a file that is not valid JSON fails with invalid-import and changes nothing', async () => {
   await store.open({ dbName: `heldnote-test-${Date.now()}` });
   const before = await store.listNotes({});

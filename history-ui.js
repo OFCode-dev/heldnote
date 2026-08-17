@@ -77,8 +77,15 @@ export function renderHistoryPanel(container, noteId, { onRestore } = {}) {
         preview.innerHTML = '';
         const pre = document.createElement('pre');
         pre.textContent = full.text;
+        // A verb-first button plus a separate reassurance caption: QA read
+        // the old full-sentence button label as an explanatory paragraph and
+        // could not find the control at all.
         const restoreButton = document.createElement('button');
-        restoreButton.textContent = t('history.restoreConfirm');
+        restoreButton.className = 'restore-version';
+        restoreButton.textContent = t('history.restore');
+        const caption = document.createElement('p');
+        caption.className = 'restore-caption';
+        caption.textContent = t('history.restoreCaption');
         restoreButton.addEventListener('click', async () => {
           restoreButton.disabled = true;
           hideNotice();
@@ -103,7 +110,7 @@ export function renderHistoryPanel(container, noteId, { onRestore } = {}) {
             showNotice(t('history.restoreFailed'));
           }
         });
-        preview.append(pre, restoreButton);
+        preview.append(pre, restoreButton, caption);
       });
       li.appendChild(button);
       list.appendChild(li);

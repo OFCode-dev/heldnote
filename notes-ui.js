@@ -70,6 +70,8 @@ export function renderNotesPanel(container, { onSelect, onImportComplete, onNote
   let lastTrashedId = null;
   let viewingTrash = false;
   let activeId = null;
+  let refreshToken = 0;
+  let undoTimer = null;
 
   container.querySelector('#theme-toggle').addEventListener('click', () => {
     if (onToggleTheme) onToggleTheme();
@@ -159,6 +161,7 @@ export function renderNotesPanel(container, { onSelect, onImportComplete, onNote
     const restoreButton = document.createElement('button');
     restoreButton.textContent = t('trash.restore');
     restoreButton.addEventListener('click', async () => {
+      hideUndo(); // the pending undo (if any) is stale once trash state changes here
       if (await runNoteAction(() => store.restoreNote(note.id))) refresh();
     });
 
@@ -177,8 +180,14 @@ export function renderNotesPanel(container, { onSelect, onImportComplete, onNote
   }
 
   async function refresh() {
+    // Guard against out-of-order completions: refresh() is called from
+    // per-keystroke paths (search, title changes), and an older listNotes()
+    // resolving after a newer one would paint stale titles — QA saw exactly
+    // that as "the sidebar shows only the first letter of the note".
+    const token = ++refreshToken;
     const query = searchInput.value.trim() || undefined;
     const notes = await store.listNotes({ query, includeTrashed: viewingTrash });
+    if (token !== refreshToken) return;
     // listNotes({includeTrashed: true}) returns live AND trashed notes mixed
     // together (it only stops EXCLUDING trashed ones); the trash view still
     // has to filter down to trashed-only itself.
@@ -211,6 +220,13 @@ export function renderNotesPanel(container, { onSelect, onImportComplete, onNote
     }
   }
 
+  function hideUndo() {
+    const banner = container.querySelector('#undo-banner');
+    banner.hidden = true;
+    lastTrashedId = null;
+    if (undoTimer) { clearTimeout(undoTimer); undoTimer = null; }
+  }
+
   function showUndo() {
     const banner = container.querySelector('#undo-banner');
     banner.hidden = false;
@@ -220,11 +236,18 @@ export function renderNotesPanel(container, { onSelect, onImportComplete, onNote
     const undoButton = document.createElement('button');
     undoButton.textContent = t('trash.undo');
     undoButton.addEventListener('click', async () => {
-      if (lastTrashedId) await store.restoreNote(lastTrashedId);
-      banner.hidden = true;
+      const id = lastTrashedId;
+      hideUndo();
+      if (id) await store.restoreNote(id);
       refresh();
     });
     banner.append(label, undoButton);
+    // An undo offer is only meaningful in the moment: QA found the banner
+    // still clickable minutes later — after the note had already been
+    // restored from the Trash — where "Undo" would act on stale state, and
+    // its in-flow height was clipping real notes out of the list.
+    if (undoTimer) clearTimeout(undoTimer);
+    undoTimer = setTimeout(hideUndo, 8000);
   }
 
   container.querySelector('#new-note').addEventListener('click', async () => {
@@ -281,7 +304,10 @@ export function renderNotesPanel(container, { onSelect, onImportComplete, onNote
   }
 
   function backupFileName() {
-    const date = new Date().toISOString().slice(0, 10);
+    // Local date, not UTC: the filename should agree with every date the
+    // user sees in the UI, which are all local.
+    const now = new Date();
+    const date = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
     return `heldnote-backup-${date}.json`;
   }
 
@@ -296,6 +322,9 @@ export function renderNotesPanel(container, { onSelect, onImportComplete, onNote
       a.click();
       a.remove();
       URL.revokeObjectURL(url);
+      // Visible confirmation: QA clicked Export and saw nothing change at
+      // all, and reasonably assumed the button was broken.
+      showBackupStatus(`${t('backup.exportSuccess')} (${a.download})`);
       return true;
     } catch (error) {
       console.error('heldnote: export failed', error);
@@ -369,6 +398,8 @@ export function renderNotesPanel(container, { onSelect, onImportComplete, onNote
     function driveErrorMessage(error) {
       const code = error && error.code;
       if (code === 'consent-denied') return t('drive.errorConsent');
+      if (code === 'popup-blocked') return t('drive.errorPopup');
+      if (code === 'timeout') return t('drive.errorTimeout');
       if (code === 'network') return t('drive.errorNetwork');
       if (code === 'invalid-import') return t('backup.importError');
       if (code === 'quota-exceeded') return t('backup.errorQuota');
@@ -441,12 +472,17 @@ export function renderNotesPanel(container, { onSelect, onImportComplete, onNote
       runDriveAction(restoreButton, 'drive.restoring', async () => {
         const blob = await driveSync.downloadBackup();
         if (!blob) return t('drive.noBackupYet');
-        await store.importAll(blob, { mode: 'copy' });
+        // 'merge' reconciles by note id: re-restoring the same backup can
+        // never duplicate notes, and local edits are never overwritten —
+        // only notes and version snapshots this device lacks are added.
+        const result = await store.importAll(blob, { mode: 'merge' });
         viewingTrash = false;
         updateToggleLabel();
         await refresh();
-        if (onImportComplete) onImportComplete('copy');
-        return t('drive.restored');
+        if (onImportComplete) onImportComplete('merge');
+        return result.notesAdded > 0
+          ? `${t('drive.restored')} (+${result.notesAdded})`
+          : t('drive.restoredNothingNew');
       });
     });
 

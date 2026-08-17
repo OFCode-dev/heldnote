@@ -1463,6 +1463,68 @@ export async function importAll(file, { mode }) {
       return { notesAdded: parsed.notes.length, notesCopied: 0, versionsAdded: parsed.versions.length, skipped: 0 };
     }
 
+    if (mode === 'merge') {
+      // Reconcile by id, for restoring a backup that shares ancestry with
+      // this device (e.g. the Drive copy this device itself wrote). Unlike
+      // 'copy', ids are preserved so a re-import can never duplicate a note;
+      // unlike 'replace', nothing local is ever overwritten or removed:
+      // - a note id we do not have → inserted as-is, with its versions;
+      // - a note id we already have → the local note, draft, and in-memory
+      //   editor state stay untouched (local edits win), and only version
+      //   snapshots we lack (by [noteId, seq]) are filled in;
+      // - meta is skipped entirely — this device's settings win.
+      //
+      // Two phases under withGlobalLock (cross-tab exclusive): snapshot what
+      // exists in a readonly transaction, then write in a second transaction.
+      // The lock is what makes the gap between them safe.
+      const readTx = openTransaction(activeConn(), ['notes', 'versions'], 'readonly');
+      const existingNoteIds = new Set(await requestToPromise(readTx.objectStore('notes').getAllKeys()));
+      const existingVersionKeys = new Set(
+        (await requestToPromise(readTx.objectStore('versions').getAllKeys())).map((key) => `${key[0]} ${key[1]}`),
+      );
+      await awaitTransactionComplete(readTx);
+
+      let notesAdded = 0;
+      let versionsAdded = 0;
+      let skipped = 0;
+      const addedNotes = [];
+      const tx = openTransaction(activeConn(), ['notes', 'drafts', 'versions'], 'readwrite', { durability: 'strict' });
+      for (const note of parsed.notes) {
+        if (existingNoteIds.has(note.id)) { skipped += 1; continue; }
+        tx.objectStore('notes').put(noteRecordFrom(note));
+        tx.objectStore('drafts').put({ noteId: note.id, text: note.text, localRev: note.localRev, savedAt: note.updatedAt, byteLength: new TextEncoder().encode(note.text).length });
+        addedNotes.push(note);
+        notesAdded += 1;
+      }
+      const addedIds = new Set(addedNotes.map((note) => note.id));
+      for (const v of parsed.versions) {
+        if (existingNoteIds.has(v.noteId)) {
+          if (existingVersionKeys.has(`${v.noteId} ${v.seq}`)) { skipped += 1; continue; }
+        } else if (!addedIds.has(v.noteId)) {
+          // A version for a note we neither had nor added — parseImportFile
+          // already guarantees this cannot happen; skip defensively rather
+          // than write an orphan record.
+          skipped += 1;
+          continue;
+        }
+        tx.objectStore('versions').put({ noteId: v.noteId, seq: v.seq, at: v.at, sourceRev: v.sourceRev, text: v.text, byteLength: new TextEncoder().encode(v.text).length });
+        versionsAdded += 1;
+      }
+      await awaitTransactionComplete(tx);
+
+      // Only brand-new notes need in-memory state seeded; existing notes'
+      // caches were deliberately left alone. For an existing note that just
+      // gained newer version snapshots, lastVersionText is also left alone:
+      // worst case the next commitVersion writes one redundant snapshot,
+      // which is cheaper than ever guessing wrong about the newest text.
+      const newestText = newestVersionTextByNoteId(parsed.versions.filter((v) => addedIds.has(v.noteId)));
+      for (const note of addedNotes) {
+        seedImportedNoteState(note.id, note, newestText.get(note.id)?.text);
+      }
+
+      return { notesAdded, notesCopied: 0, versionsAdded, skipped };
+    }
+
     const idMap = new Map();
     const tx = openTransaction(activeConn(), ['notes', 'drafts', 'versions', 'meta'], 'readwrite', { durability: 'strict' });
     // Notes are copied alongside the existing ones, but settings are global and
@@ -1877,6 +1939,37 @@ function memoryImportAll(parsed, mode) {
     }
 
     return { notesAdded: parsed.notes.length, notesCopied: 0, versionsAdded: parsed.versions.length, skipped: 0 };
+  }
+
+  if (mode === 'merge') {
+    // Same contract as the persisted merge path: ids preserved, nothing local
+    // overwritten or removed, meta skipped, only missing notes and missing
+    // [noteId, seq] snapshots filled in.
+    let notesAdded = 0;
+    let versionsAdded = 0;
+    let skipped = 0;
+    const addedNotes = [];
+    for (const note of parsed.notes) {
+      if (memoryFallback.notes.has(note.id)) { skipped += 1; continue; }
+      memoryFallback.notes.set(note.id, noteRecordFrom(note));
+      memoryFallback.drafts.set(note.id, { noteId: note.id, text: note.text, localRev: note.localRev, savedAt: note.updatedAt, byteLength: new TextEncoder().encode(note.text).length });
+      addedNotes.push(note);
+      notesAdded += 1;
+    }
+    const addedIds = new Set(addedNotes.map((note) => note.id));
+    for (const v of parsed.versions) {
+      if (!addedIds.has(v.noteId)) {
+        const versionMap = memoryVersionMap(v.noteId, false);
+        if (!memoryFallback.notes.has(v.noteId) || (versionMap && versionMap.has(v.seq))) { skipped += 1; continue; }
+      }
+      memoryVersionMap(v.noteId, true).set(v.seq, { noteId: v.noteId, seq: v.seq, at: v.at, sourceRev: v.sourceRev, text: v.text, byteLength: new TextEncoder().encode(v.text).length });
+      versionsAdded += 1;
+    }
+    const newestText = newestVersionTextByNoteId(parsed.versions.filter((v) => addedIds.has(v.noteId)));
+    for (const note of addedNotes) {
+      seedImportedNoteState(note.id, note, newestText.get(note.id)?.text);
+    }
+    return { notesAdded, notesCopied: 0, versionsAdded, skipped };
   }
 
   const idMap = new Map();

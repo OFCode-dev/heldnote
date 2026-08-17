@@ -84,23 +84,51 @@ async function getToken({ forceConsent = false } = {}) {
     tokenClient = window.google.accounts.oauth2.initTokenClient({
       client_id: GOOGLE_DRIVE_CLIENT_ID,
       scope: SCOPE,
-      callback: () => {}, // replaced per-request below
+      callback: () => {},       // both replaced per-request below
+      error_callback: () => {},
     });
   }
   return new Promise((resolve, reject) => {
+    // A connect attempt must always settle: QA found "Connecting…" pinned on
+    // screen for 90+ seconds with the button disabled, because a blocked
+    // popup produces neither callback. error_callback catches the blocked/
+    // closed popup cases GIS does report; the watchdog catches everything it
+    // does not.
+    let settled = false;
+    const watchdog = setTimeout(() => {
+      finishReject(driveError('timeout', 'no response from Google sign-in'));
+    }, 60_000);
+    function finishResolve(value) {
+      if (settled) return;
+      settled = true;
+      clearTimeout(watchdog);
+      resolve(value);
+    }
+    function finishReject(error) {
+      if (settled) return;
+      settled = true;
+      clearTimeout(watchdog);
+      reject(error);
+    }
     tokenClient.callback = (response) => {
       if (response.error) {
-        reject(driveError(response.error === 'access_denied' ? 'consent-denied' : 'auth-failed', response.error));
+        finishReject(driveError(response.error === 'access_denied' ? 'consent-denied' : 'auth-failed', response.error));
         return;
       }
       accessToken = response.access_token;
       tokenExpiresAt = Date.now() + (Number(response.expires_in) || 3600) * 1000;
-      resolve(accessToken);
+      finishResolve(accessToken);
+    };
+    tokenClient.error_callback = (error) => {
+      const type = error && error.type;
+      if (type === 'popup_failed_to_open') finishReject(driveError('popup-blocked', 'sign-in popup was blocked'));
+      else if (type === 'popup_closed') finishReject(driveError('consent-denied', 'sign-in popup was closed'));
+      else finishReject(driveError('auth-failed', String(type || error)));
     };
     try {
       tokenClient.requestAccessToken({ prompt: forceConsent ? 'consent' : '' });
     } catch (error) {
-      reject(driveError('auth-failed', String(error)));
+      finishReject(driveError('auth-failed', String(error)));
     }
   });
 }

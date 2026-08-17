@@ -79,6 +79,12 @@ const STRINGS = {
     'drive.errorGeneric': 'Drive backup failed — nothing was changed. Try again.',
     'drive.authNeeded': 'Backups are paused — click "Back up to Drive" once to resume.',
     'drive.notConnectedHint': 'Automatic once connected.',
+    'drive.errorPopup': 'The sign-in popup was blocked — allow popups for this site and try again.',
+    'drive.errorTimeout': 'Google sign-in did not respond — try again.',
+    'drive.restoredNothingNew': 'Drive backup checked — everything is already here.',
+    'history.restore': 'Restore this version',
+    'history.restoreCaption': 'The current text is kept as an earlier version.',
+    'backup.exportSuccess': 'Backup exported',
   },
   tr: {
     'status.saving': 'Kaydediliyor…',
@@ -160,6 +166,12 @@ const STRINGS = {
     'drive.errorGeneric': 'Drive yedeklemesi başarısız — hiçbir şey değiştirilmedi. Tekrar dene.',
     'drive.authNeeded': "Yedekleme duraklatıldı — sürdürmek için bir kez \"Drive'a yedekle\"ye tıkla.",
     'drive.notConnectedHint': 'Bağlandıktan sonra otomatik.',
+    'drive.errorPopup': 'Giriş penceresi engellendi — bu site için açılır pencerelere izin verip tekrar dene.',
+    'drive.errorTimeout': 'Google girişi yanıt vermedi — tekrar dene.',
+    'drive.restoredNothingNew': 'Drive yedeği kontrol edildi — her şey zaten burada.',
+    'history.restore': 'Bu sürümü geri yükle',
+    'history.restoreCaption': 'Geçerli metin önceki bir sürüm olarak saklanır.',
+    'backup.exportSuccess': 'Yedek dışa aktarıldı',
   },
 };
 
