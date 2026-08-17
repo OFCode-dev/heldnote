@@ -77,6 +77,8 @@ const STRINGS = {
     'drive.errorConsent': 'Google access was not granted — nothing was changed.',
     'drive.errorNetwork': 'Could not reach Google Drive — check your connection and try again.',
     'drive.errorGeneric': 'Drive backup failed — nothing was changed. Try again.',
+    'drive.authNeeded': 'Backups are paused — click "Back up to Drive" once to resume.',
+    'drive.notConnectedHint': 'Automatic once connected.',
   },
   tr: {
     'status.saving': 'Kaydediliyor…',
@@ -156,6 +158,8 @@ const STRINGS = {
     'drive.errorConsent': 'Google erişimi verilmedi — hiçbir şey değiştirilmedi.',
     'drive.errorNetwork': "Google Drive'a ulaşılamadı — bağlantını kontrol edip tekrar dene.",
     'drive.errorGeneric': 'Drive yedeklemesi başarısız — hiçbir şey değiştirilmedi. Tekrar dene.',
+    'drive.authNeeded': "Yedekleme duraklatıldı — sürdürmek için bir kez \"Drive'a yedekle\"ye tıkla.",
+    'drive.notConnectedHint': 'Bağlandıktan sonra otomatik.',
   },
 };
 

@@ -389,7 +389,7 @@ export function renderNotesPanel(container, { onSelect, onImportComplete, onNote
           ? `${t('drive.lastBackup')}: ${new Date(at).toLocaleString(getLanguage())}`
           : t('drive.noBackupYet');
       } else {
-        driveStatus.textContent = t('drive.notConnected');
+        driveStatus.textContent = `${t('drive.notConnected')} ${t('drive.notConnectedHint')}`;
       }
     }
 
@@ -410,6 +410,23 @@ export function renderNotesPanel(container, { onSelect, onImportComplete, onNote
     connectButton.addEventListener('click', () => {
       runDriveAction(connectButton, 'drive.connecting', async () => {
         await driveSync.connect();
+        // First backup immediately, inside the same user gesture's token —
+        // "connected" should mean "your notes are already there", not
+        // "now find the next button".
+        const blob = await store.exportAll();
+        await driveSync.uploadBackup(blob);
+      });
+    });
+
+    // Automatic backup: every durable save schedules a quiet, debounced
+    // upload (drive-sync.js owns the timing rules). Failures land in the
+    // status line only — writing is never interrupted for a backup.
+    store.subscribe((event) => {
+      if (event.type !== 'saved') return;
+      driveSync.noteSaved(() => store.exportAll(), (at, error) => {
+        if (error && error.code === 'auth-needed') renderDriveState(t('drive.authNeeded'));
+        else if (error) renderDriveState(driveErrorMessage(error));
+        else renderDriveState(null);
       });
     });
 

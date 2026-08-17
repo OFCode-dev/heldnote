@@ -131,13 +131,16 @@ async function findBackupFile(token) {
 // Runs `work(token)`, transparently re-authenticating once if the cached
 // token turns out to be stale — without re-prompting an already-consented
 // user (prompt: '').
-async function withToken(work) {
+async function withToken(work, { silent = false } = {}) {
   let token = await getToken();
   try {
     return await work(token);
   } catch (error) {
     if (error && error.code === 'auth-expired') {
       accessToken = null;
+      // In silent (background) mode a re-auth could pop UI mid-typing; give
+      // up quietly instead — the next manual action re-authenticates.
+      if (silent) throw driveError('auth-needed', 'token expired during background upload');
       token = await getToken();
       return work(token);
     }
@@ -163,7 +166,7 @@ export function disconnect() {
 
 // Uploads the given backup Blob (store.exportAll()'s output) to the
 // appDataFolder, overwriting the previous backup file if one exists.
-export async function uploadBackup(blob) {
+export async function uploadBackup(blob, { silent = false } = {}) {
   return withToken(async (token) => {
     const existing = await findBackupFile(token);
     if (existing) {
@@ -186,7 +189,62 @@ export async function uploadBackup(blob) {
     try { localStorage.setItem(LAST_BACKUP_KEY, String(now)); } catch (e) { /* cosmetic */ }
     setConnected(true);
     return now;
-  });
+  }, { silent });
+}
+
+// --- Automatic backup -----------------------------------------------------
+//
+// "Sync" here is deliberately one-way: local notes are the source of truth,
+// Drive holds a rolling snapshot. What must never be true is "the user wrote
+// for an hour and Drive still has yesterday's file because they forgot a
+// button". So: every durable local save schedules a quiet upload, debounced
+// so a writing session becomes one upload, rate-limited so Drive is touched
+// at most once per MIN_INTERVAL even during constant typing.
+
+const AUTO_DEBOUNCE_MS = 30_000;      // quiet period after the last save
+const AUTO_MIN_INTERVAL_MS = 300_000; // at most one auto-upload per 5 min
+
+let autoTimer = null;
+let autoUploadInFlight = false;
+let lastAutoUploadAt = 0;
+
+export function hasFreshToken() {
+  return !!accessToken && Date.now() < tokenExpiresAt - 60_000;
+}
+
+// exportAll: () => Promise<Blob> (store.exportAll), onDone: (ts|null, error?) => void
+export function noteSaved(exportAll, onDone) {
+  if (!isConfigured() || !isConnected()) return;
+  // Without a live token an upload would need requestAccessToken, and outside
+  // a user gesture that risks a popup (or a popup-blocker fight) in the
+  // middle of writing. Surface a quiet "one click to resume backups" state
+  // instead; the next manual Drive action refreshes the token and auto-backup
+  // takes over again.
+  if (!hasFreshToken()) {
+    if (onDone) onDone(null, driveError('auth-needed', 'no live token'));
+    return;
+  }
+  if (autoTimer) clearTimeout(autoTimer);
+  const wait = Math.max(AUTO_DEBOUNCE_MS, lastAutoUploadAt + AUTO_MIN_INTERVAL_MS - Date.now());
+  autoTimer = setTimeout(async () => {
+    autoTimer = null;
+    if (autoUploadInFlight) return;
+    autoUploadInFlight = true;
+    try {
+      const blob = await exportAll();
+      const at = await uploadBackup(blob, { silent: true });
+      lastAutoUploadAt = at;
+      if (onDone) onDone(at);
+    } catch (error) {
+      // Never interrupt writing for a failed background backup: report to the
+      // caller (which shows it in the quiet Drive status line) and retry on
+      // the next save.
+      console.error('heldnote: auto backup failed', error);
+      if (onDone) onDone(null, error);
+    } finally {
+      autoUploadInFlight = false;
+    }
+  }, wait);
 }
 
 // Downloads the newest Drive backup as a Blob for store.importAll().
