@@ -13,3 +13,8 @@ export const LIMITS = {
   // openly a placeholder.
   GLOBAL_HISTORY_BYTE_BUDGET: 200 * 1024 * 1024, // 200 MB — provisional, see Task 21
 };
+
+// Google Drive backup (drive-sync.js). Empty string = feature hidden: the
+// Drive section of the backup panel only renders when a client id is set.
+// This is an OAuth *client* id — public by design, not a secret.
+export const GOOGLE_DRIVE_CLIENT_ID = '';

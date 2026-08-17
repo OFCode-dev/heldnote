@@ -331,6 +331,18 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, summary:focus
 #backup-panel .backup-actions button:hover { background: var(--hover-bg); }
 #backup-status { font-size: 12px; color: var(--text-secondary); min-height: 1em; padding: 0.25rem 0.5rem; }
 
+#drive-section[hidden] { display: none; }
+.backup-divider {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+  padding: 0.55rem 0.5rem 0.1rem;
+}
+.drive-status { font-size: 12px; color: var(--text-secondary); min-height: 1em; padding: 0.25rem 0.5rem; }
+#drive-section .backup-actions button[hidden] { display: none; }
+
 /* ---- Editor ------------------------------------------------------------- */
 
 #editor-panel {

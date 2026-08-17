@@ -1,5 +1,6 @@
 // notes-ui.js
 import * as store from './store.js';
+import * as driveSync from './drive-sync.js';
 import { t, getLanguage } from './i18n.js';
 
 // The continuous-return mark from brand-brief.md §2: one uninterrupted line
@@ -44,6 +45,16 @@ export function renderNotesPanel(container, { onSelect, onImportComplete, onNote
           <button id="export-backup">${t('backup.export')}</button>
           <button id="import-copy">${t('backup.importCopy')}</button>
           <button id="import-replace">${t('backup.importReplace')}</button>
+        </div>
+        <div id="drive-section" hidden>
+          <div class="backup-divider">${t('drive.title')}</div>
+          <div class="backup-actions">
+            <button id="drive-connect" hidden>${t('drive.connect')}</button>
+            <button id="drive-backup" hidden>${t('drive.backupNow')}</button>
+            <button id="drive-restore" hidden>${t('drive.restore')}</button>
+            <button id="drive-disconnect" hidden>${t('drive.disconnect')}</button>
+          </div>
+          <div id="drive-status" class="drive-status"></div>
         </div>
         <input id="import-file" type="file" accept="application/json" hidden>
         <div id="backup-status" role="status"></div>
@@ -337,6 +348,96 @@ export function renderNotesPanel(container, { onSelect, onImportComplete, onNote
       showBackupStatus(backupErrorMessage(error, 'backup.importError'));
     }
   });
+
+  // --- Google Drive backup ---------------------------------------------
+  //
+  // Hidden entirely until constants.js sets GOOGLE_DRIVE_CLIENT_ID. The Drive
+  // copy is a backup, never the source of truth: restore imports as copies
+  // (the safe, additive mode) and can never destroy local notes.
+
+  const driveSection = container.querySelector('#drive-section');
+  if (driveSync.isConfigured()) {
+    driveSection.hidden = false;
+    const connectButton = container.querySelector('#drive-connect');
+    const backupButton = container.querySelector('#drive-backup');
+    const restoreButton = container.querySelector('#drive-restore');
+    const disconnectButton = container.querySelector('#drive-disconnect');
+    const driveStatus = container.querySelector('#drive-status');
+
+    function driveErrorMessage(error) {
+      const code = error && error.code;
+      if (code === 'consent-denied') return t('drive.errorConsent');
+      if (code === 'network') return t('drive.errorNetwork');
+      if (code === 'invalid-import') return t('backup.importError');
+      if (code === 'quota-exceeded') return t('backup.errorQuota');
+      return t('drive.errorGeneric');
+    }
+
+    function renderDriveState(message) {
+      const connected = driveSync.isConnected();
+      connectButton.hidden = connected;
+      backupButton.hidden = !connected;
+      restoreButton.hidden = !connected;
+      disconnectButton.hidden = !connected;
+      if (message != null) {
+        driveStatus.textContent = message;
+      } else if (connected) {
+        const at = driveSync.lastBackupAt();
+        driveStatus.textContent = at
+          ? `${t('drive.lastBackup')}: ${new Date(at).toLocaleString(getLanguage())}`
+          : t('drive.noBackupYet');
+      } else {
+        driveStatus.textContent = t('drive.notConnected');
+      }
+    }
+
+    async function runDriveAction(button, busyKey, work) {
+      button.disabled = true;
+      renderDriveState(t(busyKey));
+      try {
+        const message = await work();
+        renderDriveState(message != null ? message : null);
+      } catch (error) {
+        console.error('heldnote: drive action failed', error);
+        renderDriveState(driveErrorMessage(error));
+      } finally {
+        button.disabled = false;
+      }
+    }
+
+    connectButton.addEventListener('click', () => {
+      runDriveAction(connectButton, 'drive.connecting', async () => {
+        await driveSync.connect();
+      });
+    });
+
+    backupButton.addEventListener('click', () => {
+      runDriveAction(backupButton, 'drive.backingUp', async () => {
+        const blob = await store.exportAll();
+        await driveSync.uploadBackup(blob);
+      });
+    });
+
+    restoreButton.addEventListener('click', () => {
+      runDriveAction(restoreButton, 'drive.restoring', async () => {
+        const blob = await driveSync.downloadBackup();
+        if (!blob) return t('drive.noBackupYet');
+        await store.importAll(blob, { mode: 'copy' });
+        viewingTrash = false;
+        updateToggleLabel();
+        await refresh();
+        if (onImportComplete) onImportComplete('copy');
+        return t('drive.restored');
+      });
+    });
+
+    disconnectButton.addEventListener('click', () => {
+      driveSync.disconnect();
+      renderDriveState(null);
+    });
+
+    renderDriveState(null);
+  }
 
   refresh();
   return {
