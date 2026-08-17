@@ -3,12 +3,19 @@ import * as store from './store.js';
 import * as driveSync from './drive-sync.js';
 import { t, getLanguage } from './i18n.js';
 
-// The continuous-return mark from brand-brief.md §2: one uninterrupted line
-// forming a lowercase h that curves back on itself. Inline so it needs no
-// asset request and inherits its stroke color from CSS.
-export const BRAND_MARK = `<svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true">
-  <path class="brand-mark-stroke" d="M6 4v16M6 11c0-3 3-4.5 6-4.5s6 1.5 6 4.5v6c0 2-1.5 3-3 3"
-    fill="none" stroke-width="2.4" stroke-linecap="round"/>
+// The product mark: the sage notepad-on-a-monitor from the favicon/app icon
+// (Quick Web Notepad's composition in the heldnote palette). One drawing
+// everywhere — tab, home screen, and in-page brand — is the identity.
+// Colors are fixed on purpose so the mark reads the same in both themes.
+export const BRAND_MARK = `<svg width="22" height="22" viewBox="0 0 36 36" aria-hidden="true">
+  <rect x="2" y="3" width="32" height="22" rx="2" fill="#4E7A62" stroke="#78A98D" stroke-width="1.5"/>
+  <rect x="4" y="5" width="28" height="18" rx="1" fill="#0E1116"/>
+  <line x1="7" y1="10" x2="24" y2="10" stroke="#9FC7AE" stroke-width="1.2" stroke-linecap="round"/>
+  <line x1="7" y1="13.5" x2="22" y2="13.5" stroke="#9FC7AE" stroke-width="1.2" stroke-linecap="round"/>
+  <line x1="7" y1="17" x2="19" y2="17" stroke="#9FC7AE" stroke-width="1.2" stroke-linecap="round"/>
+  <rect x="19.5" y="15.5" width="1.2" height="3" fill="#78A98D"/>
+  <rect x="15" y="25" width="6" height="4" fill="#4E7A62"/>
+  <rect x="11" y="29" width="14" height="2.5" rx="1" fill="#4E7A62"/>
 </svg>`;
 
 function formatRelativeTime(timestamp) {
