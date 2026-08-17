@@ -364,6 +364,9 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, summary:focus
   display: flex;
   align-items: baseline;
   gap: 0.75rem;
+  width: 100%;
+  max-width: 76ch;
+  margin: 0 auto;
   padding: 0.85rem 1.25rem 0.5rem;
 }
 .editor-header .note-heading {
