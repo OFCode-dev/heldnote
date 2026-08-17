@@ -86,6 +86,7 @@ const STRINGS = {
     'history.restoreCaption': 'The current text is kept as an earlier version.',
     'history.latest': 'latest',
     'backup.exportSuccess': 'Backup exported',
+    'drive.errorRefusedEmpty': 'This device has no notes yet — restore from Drive first; the existing backup was not overwritten.',
     'drive.failedSince': 'Backup is failing — notes changed since the last successful backup. Click "Back up to Drive" to retry',
   },
   tr: {
@@ -174,6 +175,7 @@ const STRINGS = {
     'history.restore': 'Bu sürümü geri yükle',
     'history.restoreCaption': 'Geçerli metin önceki bir sürüm olarak saklanır.',
     'history.latest': 'en yeni',
+    'drive.errorRefusedEmpty': "Bu cihazda henüz not yok — önce Drive'dan geri yükle; mevcut yedeğin üzerine yazılmadı.",
     'drive.failedSince': "Yedekleme başarısız oluyor — son başarılı yedekten sonra notlar değişti. Tekrar denemek için \"Drive'a yedekle\"ye tıkla",
     'backup.exportSuccess': 'Yedek dışa aktarıldı',
   },

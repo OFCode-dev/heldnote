@@ -434,6 +434,7 @@ export function renderNotesPanel(container, { onSelect, onImportComplete, onNote
       if (code === 'consent-denied') return t('drive.errorConsent');
       if (code === 'popup-blocked') return t('drive.errorPopup');
       if (code === 'timeout') return t('drive.errorTimeout');
+      if (code === 'refused-empty') return t('drive.errorRefusedEmpty');
       if (code === 'network') return t('drive.errorNetwork');
       if (code === 'invalid-import') return t('backup.importError');
       if (code === 'quota-exceeded') return t('backup.errorQuota');
@@ -483,11 +484,28 @@ export function renderNotesPanel(container, { onSelect, onImportComplete, onNote
     connectButton.addEventListener('click', () => {
       runDriveAction(connectButton, 'drive.connecting', async () => {
         await driveSync.connect();
-        // First backup immediately, inside the same user gesture's token —
-        // "connected" should mean "your notes are already there", not
-        // "now find the next button".
+        // Pull BEFORE push. Connecting on a second device used to upload
+        // that device's (often empty) library over the existing Drive
+        // backup, and the user's notes never appeared on their phone. The
+        // right order is: merge down whatever Drive holds (by id — cannot
+        // duplicate, cannot overwrite local edits), then upload the merged
+        // whole. "Connected" now means "same notes here and on Drive".
+        let pulled = 0;
+        const remote = await driveSync.downloadBackup();
+        if (remote) {
+          const result = await store.importAll(remote, { mode: 'merge' });
+          pulled = result.notesAdded;
+          if (pulled > 0) {
+            viewingTrash = false;
+            updateToggleLabel();
+            await refresh();
+            if (onImportComplete) onImportComplete('merge');
+          }
+        }
+        const live = await store.listNotes({ includeTrashed: true });
         const blob = await store.exportAll();
-        await driveSync.uploadBackup(blob);
+        await driveSync.uploadBackup(blob, { localNoteCount: live.length });
+        return pulled > 0 ? `${t('drive.restored')} (+${pulled})` : null;
       });
     });
 
@@ -496,7 +514,12 @@ export function renderNotesPanel(container, { onSelect, onImportComplete, onNote
     // status line only — writing is never interrupted for a backup.
     store.subscribe((event) => {
       if (event.type !== 'saved') return;
-      driveSync.noteSaved(() => store.exportAll(), (at, error) => {
+      driveSync.noteSaved(async () => {
+        const live = await store.listNotes({ includeTrashed: true });
+        const blob = await store.exportAll();
+        blob.localNoteCount = live.length;
+        return blob;
+      }, (at, error) => {
         if (error && error.code === 'auth-needed') { renderDriveState(t('drive.authNeeded')); return; }
         if (error) {
           driveSync.recordFailure(error.code);
@@ -509,8 +532,9 @@ export function renderNotesPanel(container, { onSelect, onImportComplete, onNote
 
     backupButton.addEventListener('click', () => {
       runDriveAction(backupButton, 'drive.backingUp', async () => {
+        const live = await store.listNotes({ includeTrashed: true });
         const blob = await store.exportAll();
-        await driveSync.uploadBackup(blob);
+        await driveSync.uploadBackup(blob, { localNoteCount: live.length });
       });
     });
 

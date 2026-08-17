@@ -237,9 +237,15 @@ export function disconnect() {
 
 // Uploads the given backup Blob (store.exportAll()'s output) to the
 // appDataFolder, overwriting the previous backup file if one exists.
-export async function uploadBackup(blob, { silent = false } = {}) {
+// Pass localNoteCount when known: an upload carrying ZERO notes is refused
+// whenever a Drive backup already exists — an empty device (fresh browser,
+// cleared site data) must never erase the only off-device copy.
+export async function uploadBackup(blob, { silent = false, localNoteCount } = {}) {
   return withToken(async (token) => {
     const existing = await findBackupFile(token);
+    if (existing && localNoteCount === 0) {
+      throw driveError('refused-empty', 'refusing to overwrite an existing Drive backup with an empty library');
+    }
     if (existing) {
       await driveFetch(token, `https://www.googleapis.com/upload/drive/v3/files/${existing.id}?uploadType=media`, {
         method: 'PATCH',
@@ -306,7 +312,7 @@ export function noteSaved(exportAll, onDone) {
     autoUploadInFlight = true;
     try {
       const blob = await exportAll();
-      const at = await uploadBackup(blob, { silent: true });
+      const at = await uploadBackup(blob, { silent: true, localNoteCount: blob.localNoteCount });
       lastAutoUploadAt = at;
       if (onDone) onDone(at);
     } catch (error) {
