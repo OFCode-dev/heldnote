@@ -17,18 +17,102 @@ function countWords(text) {
   return matches ? matches.length : 0;
 }
 
+// The macOS-HUD confirmation toast Quick Web Notepad ships: blooms in at
+// 150ms, dissolves out over 2s, pointer-events none so it can never block
+// anything. One shared element, lazily created.
+let hudTimer = null;
+function showHud(label) {
+  let hud = document.getElementById('hud');
+  if (!hud) {
+    hud = document.createElement('div');
+    hud.id = 'hud';
+    hud.innerHTML = '<div class="hud-mark">✓</div><div class="hud-label"></div>';
+    document.body.appendChild(hud);
+  }
+  hud.querySelector('.hud-label').textContent = label;
+  hud.classList.remove('out');
+  // force a restart of the transition when fired twice quickly
+  void hud.offsetWidth;
+  hud.classList.add('show');
+  if (hudTimer) clearTimeout(hudTimer);
+  hudTimer = setTimeout(() => {
+    hud.classList.remove('show');
+    hud.classList.add('out');
+  }, 900);
+}
+
+const ZOOM_KEY = 'heldnote-zoom';
+const WRAP_KEY = 'heldnote-wrap';
+const BASE_FONT_PX = 17;
+
+function loadZoom() {
+  try {
+    const value = Number(localStorage.getItem(ZOOM_KEY));
+    return Number.isFinite(value) && value >= 60 && value <= 200 ? value : 100;
+  } catch (e) { return 100; }
+}
+
+function loadWrap() {
+  try { return localStorage.getItem(WRAP_KEY) !== 'off'; } catch (e) { return true; }
+}
+
+function escapeRegExp(text) {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 export function renderEditor(container, noteId, { onRevChange, onTitleChange, onError, onToggleHistory, historyOpen = false } = {}) {
   container.innerHTML = `
     <div class="editor-header">
       <h1 class="note-heading"></h1>
-      <button id="toggle-history" aria-pressed="${historyOpen}">${t('editor.history')}</button>
+      <div class="editor-tools" role="toolbar" aria-label="${t('editor.toolsLabel')}">
+        <button id="tool-copy" title="${t('editor.copy')}"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg></button>
+        <button id="tool-download" title="${t('editor.download')}"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 3v12m0 0-5-5m5 5 5-5M4 21h16"/></svg></button>
+        <button id="tool-find" title="${t('find.open')} (Ctrl+F)"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m20 20-4.8-4.8"/></svg></button>
+        <button id="tool-wrap" title="${t('editor.wrap')}" aria-pressed="true">⏎</button>
+        <button id="tool-zoom-out" title="A−">A−</button>
+        <button id="tool-zoom-in" title="A+">A+</button>
+        <button id="toggle-history" aria-pressed="${historyOpen}">${t('editor.history')}</button>
+      </div>
     </div>
-    <textarea id="editor" aria-label="Note text"></textarea>
+    <div id="find-bar" hidden>
+      <input id="find-input" type="text" placeholder="${t('find.placeholder')}" aria-label="${t('find.placeholder')}">
+      <span id="find-count" aria-live="polite"></span>
+      <button id="find-prev" title="${t('find.prev')}">↑</button>
+      <button id="find-next" title="${t('find.next')}">↓</button>
+      <label class="find-flag"><input id="find-case" type="checkbox">Aa</label>
+      <label class="find-flag"><input id="find-regex" type="checkbox">.*</label>
+      <input id="replace-input" type="text" placeholder="${t('find.replacePlaceholder')}" aria-label="${t('find.replacePlaceholder')}">
+      <button id="replace-one">${t('find.replace')}</button>
+      <button id="replace-all">${t('find.replaceAll')}</button>
+      <button id="find-close" title="Esc">×</button>
+    </div>
+    <textarea id="editor" aria-label="Note text" spellcheck="false"></textarea>
   `;
   const textarea = container.querySelector('#editor');
   const heading = container.querySelector('.note-heading');
   const historyButton = container.querySelector('#toggle-history');
   const countsEl = document.getElementById('status-counts');
+  const findBar = container.querySelector('#find-bar');
+  const findInput = container.querySelector('#find-input');
+  const findCount = container.querySelector('#find-count');
+  const replaceInput = container.querySelector('#replace-input');
+  const caseBox = container.querySelector('#find-case');
+  const regexBox = container.querySelector('#find-regex');
+
+  let zoom = loadZoom();
+  let wrapOn = loadWrap();
+
+  function applyZoom() {
+    textarea.style.fontSize = `${Math.round(BASE_FONT_PX * zoom / 100)}px`;
+    renderPosition();
+  }
+  function applyWrap() {
+    textarea.style.whiteSpace = wrapOn ? 'pre-wrap' : 'pre';
+    textarea.style.overflowX = wrapOn ? 'hidden' : 'auto';
+    container.querySelector('#tool-wrap').setAttribute('aria-pressed', String(wrapOn));
+  }
+  applyZoom();
+  applyWrap();
 
   // Focus synchronously, before the note text loads. QA proved that any
   // async gap here turns immediate typing into disaster: with focus still
@@ -55,7 +139,15 @@ export function renderEditor(container, noteId, { onRevChange, onTitleChange, on
 
   function renderCounts(text) {
     if (!countsEl) return;
-    countsEl.textContent = `${countWords(text)} ${t('status.words')} · ${text.length} ${t('status.chars')}`;
+    const upTo = textarea.value.slice(0, textarea.selectionStart || 0);
+    const line = (upTo.match(/\n/g) || []).length + 1;
+    const col = upTo.length - upTo.lastIndexOf('\n');
+    const zoomPart = zoom !== 100 ? ` · ${zoom}%` : '';
+    countsEl.textContent = `${t('status.line')} ${line}:${col} · ${countWords(text)} ${t('status.words')} · ${text.length} ${t('status.chars')}${zoomPart}`;
+  }
+
+  function renderPosition() {
+    renderCounts(textarea.value);
   }
 
   function reportTitleIfChanged(text) {
@@ -127,10 +219,183 @@ export function renderEditor(container, noteId, { onRevChange, onTitleChange, on
 
   textarea.addEventListener('input', onInput);
 
+  // Ln:Col tracks the caret, not just typing.
+  const onSelectionMove = () => renderPosition();
+  textarea.addEventListener('keyup', onSelectionMove);
+  textarea.addEventListener('click', onSelectionMove);
+
+  // --- Tools: copy, download, wrap, zoom -------------------------------
+
+  container.querySelector('#tool-copy').addEventListener('click', async () => {
+    try {
+      await navigator.clipboard.writeText(textarea.value);
+      showHud(t('toast.copied'));
+    } catch (e) {
+      textarea.select();
+      document.execCommand('copy');
+      showHud(t('toast.copied'));
+    }
+  });
+
+  container.querySelector('#tool-download').addEventListener('click', () => {
+    const title = deriveTitle(textarea.value);
+    const safe = (title === 'Untitled' ? 'not' : title).replace(/[^\p{L}\p{N} _-]/gu, '').trim().slice(0, 60) || 'not';
+    const blob = new Blob([textarea.value], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${safe}.txt`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    showHud(t('toast.downloaded'));
+  });
+
+  container.querySelector('#tool-wrap').addEventListener('click', () => {
+    wrapOn = !wrapOn;
+    try { localStorage.setItem(WRAP_KEY, wrapOn ? 'on' : 'off'); } catch (e) { /* cosmetic */ }
+    applyWrap();
+  });
+
+  function setZoom(next) {
+    zoom = Math.min(200, Math.max(60, next));
+    try { localStorage.setItem(ZOOM_KEY, String(zoom)); } catch (e) { /* cosmetic */ }
+    applyZoom();
+  }
+  container.querySelector('#tool-zoom-out').addEventListener('click', () => setZoom(zoom - 10));
+  container.querySelector('#tool-zoom-in').addEventListener('click', () => setZoom(zoom + 10));
+
+  // --- Find & replace ---------------------------------------------------
+  //
+  // Selection-based like a plain editor: matches are counted with a regex,
+  // navigation selects the match in the textarea and scrolls it into view.
+  // Replacements go through the exact same input path as typing, so drafts
+  // and version history see them like any other edit.
+
+  function buildPattern() {
+    const raw = findInput.value;
+    if (!raw) return null;
+    const flags = caseBox.checked ? 'g' : 'gi';
+    try {
+      return new RegExp(regexBox.checked ? raw : escapeRegExp(raw), flags);
+    } catch (e) {
+      return 'invalid';
+    }
+  }
+
+  function allMatches() {
+    const pattern = buildPattern();
+    if (!pattern || pattern === 'invalid') return { pattern, matches: [] };
+    const matches = [];
+    let m;
+    while ((m = pattern.exec(textarea.value)) !== null) {
+      matches.push({ start: m.index, end: m.index + m[0].length });
+      if (m[0].length === 0) pattern.lastIndex += 1; // zero-width safety
+      if (matches.length > 9999) break;
+    }
+    return { pattern, matches };
+  }
+
+  function updateFindCount(current) {
+    const { pattern, matches } = allMatches();
+    if (pattern === 'invalid') { findCount.textContent = t('find.invalid'); return matches; }
+    if (!pattern) { findCount.textContent = ''; return matches; }
+    findCount.textContent = current != null && matches.length > 0
+      ? `${current + 1}/${matches.length}`
+      : String(matches.length);
+    return matches;
+  }
+
+  function jump(direction) {
+    const matches = updateFindCount();
+    if (matches.length === 0) return;
+    const from = direction > 0 ? textarea.selectionEnd : textarea.selectionStart;
+    let index = direction > 0
+      ? matches.findIndex((m) => m.start >= from)
+      : (() => { let last = -1; matches.forEach((m, i) => { if (m.end <= from) last = i; }); return last; })();
+    if (index === -1) index = direction > 0 ? 0 : matches.length - 1;
+    const match = matches[index];
+    textarea.setSelectionRange(match.start, match.end);
+    // Scroll the selection into view: a hidden trick — blur/focus recenters
+    // the caret in most engines; cheaper than mirror-div measurement.
+    textarea.blur();
+    textarea.focus();
+    updateFindCount(index);
+  }
+
+  function replaceCurrent() {
+    const matches = updateFindCount();
+    const { selectionStart, selectionEnd } = textarea;
+    const hit = matches.find((m) => m.start === selectionStart && m.end === selectionEnd);
+    if (!hit) { jump(1); return; }
+    textarea.setRangeText(replaceInput.value, hit.start, hit.end, 'end');
+    textarea.dispatchEvent(new Event('input', { bubbles: true }));
+    jump(1);
+  }
+
+  function replaceAll() {
+    const { pattern, matches } = allMatches();
+    if (!pattern || pattern === 'invalid' || matches.length === 0) return;
+    const replacement = replaceInput.value;
+    textarea.value = regexBox.checked
+      ? textarea.value.replace(pattern, replacement)
+      : textarea.value.replace(pattern, () => replacement);
+    textarea.dispatchEvent(new Event('input', { bubbles: true }));
+    updateFindCount();
+    showHud(`${matches.length} ${t('find.replaced')}`);
+  }
+
+  function openFind() {
+    findBar.hidden = false;
+    const selected = textarea.value.slice(textarea.selectionStart, textarea.selectionEnd);
+    if (selected && selected.length < 80 && !selected.includes('\n')) findInput.value = selected;
+    findInput.focus();
+    findInput.select();
+    updateFindCount();
+  }
+
+  function closeFind() {
+    findBar.hidden = true;
+    findCount.textContent = '';
+    textarea.focus();
+  }
+
+  container.querySelector('#tool-find').addEventListener('click', () => {
+    if (findBar.hidden) openFind(); else closeFind();
+  });
+  container.querySelector('#find-next').addEventListener('click', () => jump(1));
+  container.querySelector('#find-prev').addEventListener('click', () => jump(-1));
+  container.querySelector('#replace-one').addEventListener('click', replaceCurrent);
+  container.querySelector('#replace-all').addEventListener('click', replaceAll);
+  container.querySelector('#find-close').addEventListener('click', closeFind);
+  findInput.addEventListener('input', () => updateFindCount());
+  caseBox.addEventListener('change', () => updateFindCount());
+  regexBox.addEventListener('change', () => updateFindCount());
+  findInput.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') { event.preventDefault(); jump(event.shiftKey ? -1 : 1); }
+  });
+
+  const onGlobalKeydown = (event) => {
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'f') {
+      event.preventDefault();
+      openFind();
+    } else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') {
+      event.preventDefault();
+      container.querySelector('#tool-download').click();
+    } else if (event.key === 'Escape' && !findBar.hidden) {
+      closeFind();
+    }
+  };
+  document.addEventListener('keydown', onGlobalKeydown);
+
   return {
     destroy() {
       destroyed = true;
       textarea.removeEventListener('input', onInput);
+      textarea.removeEventListener('keyup', onSelectionMove);
+      textarea.removeEventListener('click', onSelectionMove);
+      document.removeEventListener('keydown', onGlobalKeydown);
       clearTimeout(idleTimer);
       clearTimeout(maxWaitTimer);
       if (countsEl) countsEl.textContent = '';

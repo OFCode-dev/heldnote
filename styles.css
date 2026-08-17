@@ -423,14 +423,112 @@ textarea#editor {
   margin: 0 auto;
   font-family: var(--font-editor);
   font-size: 17px;
-  line-height: 1.6;
+  /* 1.65 where a default textarea sits near 1.2 — the single cheapest thing
+     separating "code editor" from "form field" (inherited from Quick Web
+     Notepad, where it carries the whole feel). */
+  line-height: 1.65;
   background: transparent;
   color: var(--text);
+  /* The box refuses to look like a box; the sage caret IS the focus ring. */
   border: none;
   resize: none;
+  caret-color: var(--sage-500);
   padding: 0.5rem 1.25rem 1.25rem;
 }
 textarea#editor:focus-visible { outline: none; }
+textarea#editor::selection { background: rgba(120, 169, 141, 0.32); }
+
+.editor-tools {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  flex: none;
+}
+.editor-tools button {
+  font-size: 13px;
+  line-height: 1;
+  padding: 0.35rem 0.5rem;
+  color: var(--text-secondary);
+  border: 1px solid transparent;
+}
+.editor-tools button:hover { background: var(--hover-bg); color: var(--text); }
+.editor-tools button[aria-pressed="true"] { color: var(--cyan-500); }
+.editor-tools #toggle-history { border: 1px solid var(--border); margin-left: 0.35rem; }
+
+#find-bar[hidden] { display: none; }
+#find-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+  width: 100%;
+  max-width: 76ch;
+  margin: 0 auto;
+  padding: 0.35rem 1.25rem 0.5rem;
+  font-size: 13px;
+}
+#find-bar input[type="text"] {
+  font: inherit;
+  color: var(--text);
+  background: var(--elevated-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  padding: 0.3rem 0.5rem;
+  min-width: 0;
+}
+#find-input { flex: 2 1 8rem; }
+#replace-input { flex: 2 1 8rem; }
+#find-count { color: var(--text-secondary); min-width: 2.5rem; text-align: center; font-variant-numeric: tabular-nums; }
+#find-bar button {
+  padding: 0.3rem 0.5rem;
+  border: 1px solid var(--border);
+  background: var(--elevated-bg);
+  color: var(--text-secondary);
+}
+#find-bar button:hover { background: var(--hover-bg); color: var(--text); }
+.find-flag {
+  display: flex;
+  align-items: center;
+  gap: 0.2rem;
+  color: var(--text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+  user-select: none;
+}
+.find-flag input { accent-color: var(--sage-500); }
+
+/* The confirmation HUD (150ms in, 2s out, pointer-events none — it can
+   confirm but never interrupt). */
+#hud {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%) scale(0.95);
+  background: rgba(120, 120, 120, 0.25);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border-radius: 22px;
+  padding: 26px 38px 22px;
+  min-width: 150px;
+  text-align: center;
+  opacity: 0;
+  pointer-events: none;
+  z-index: 100;
+  transition: opacity 0.15s ease-out, transform 0.15s ease-out;
+}
+#hud.show { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+#hud.out { opacity: 0; transform: translate(-50%, -50%) scale(0.95); transition: opacity 2s, transform 2s; }
+#hud .hud-mark {
+  width: 84px;
+  height: 84px;
+  margin: 0 auto 10px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.14);
+  color: #fff;
+  font-size: 52px;
+  line-height: 84px;
+}
+#hud .hud-label { color: #fff; font-size: 18px; font-weight: 700; }
 
 /* Empty state — an invitation to act, not a blank void. */
 .editor-empty {
