@@ -46,19 +46,21 @@ export function renderNotesPanel(container, { onSelect, onImportComplete, onNote
           <button id="import-copy">${t('backup.importCopy')}</button>
           <button id="import-replace">${t('backup.importReplace')}</button>
         </div>
-        <div id="drive-section" hidden>
-          <div class="backup-divider">${t('drive.title')}</div>
-          <div class="backup-actions">
-            <button id="drive-connect" hidden>${t('drive.connect')}</button>
-            <button id="drive-backup" hidden>${t('drive.backupNow')}</button>
-            <button id="drive-restore" hidden>${t('drive.restore')}</button>
-            <button id="drive-disconnect" hidden>${t('drive.disconnect')}</button>
-          </div>
-          <div id="drive-status" class="drive-status"></div>
-        </div>
         <input id="import-file" type="file" accept="application/json" hidden>
         <div id="backup-status" role="status"></div>
       </details>
+      <div id="drive-section" hidden>
+        <div class="backup-actions">
+          <button id="drive-connect" class="drive-primary" hidden>
+            <svg width="15" height="14" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M8.6 2.5h6.8L23 15.3l-3.4 6.2-7.6-13.2zM7.5 4.4 1 15.9l3.4 5.8 6.5-11.4zM6 22h12.4l3-5.3H9z"/></svg>
+            ${t('drive.connect')}
+          </button>
+          <button id="drive-backup" hidden>${t('drive.backupNow')}</button>
+          <button id="drive-restore" hidden>${t('drive.restore')}</button>
+          <button id="drive-disconnect" hidden>${t('drive.disconnect')}</button>
+        </div>
+        <div id="drive-status" class="drive-status"></div>
+      </div>
     </div>
   `;
 

@@ -332,15 +332,21 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, summary:focus
 #backup-status { font-size: 12px; color: var(--text-secondary); min-height: 1em; padding: 0.25rem 0.5rem; }
 
 #drive-section[hidden] { display: none; }
-.backup-divider {
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--text-secondary);
-  padding: 0.55rem 0.5rem 0.1rem;
+#drive-section {
+  margin-top: 0.4rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid var(--border);
 }
-.drive-status { font-size: 12px; color: var(--text-secondary); min-height: 1em; padding: 0.25rem 0.5rem; }
+#drive-section .backup-actions { padding: 0 0.5rem; }
+.drive-primary {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.45rem;
+  font-weight: 600;
+}
+.drive-primary svg { flex: none; }
+.drive-status { font-size: 12px; color: var(--text-secondary); min-height: 1em; padding: 0.3rem 0.5rem 0; }
 #drive-section .backup-actions button[hidden] { display: none; }
 
 /* ---- Editor ------------------------------------------------------------- */
