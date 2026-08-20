@@ -25,7 +25,7 @@ test('createNote, listNotes, setPinned, trashNote, restoreNote, purgeNote round-
 
   const note = await store.createNote();
   assert(typeof note.id === 'string' && note.id.length > 0, 'expected a generated id');
-  assertEquals(note.title, 'Untitled');
+  assertEquals(note.title, 'Untitled.txt');
   assertEquals(note.pinned, false);
   assertEquals(note.deletedAt, null);
 
@@ -60,12 +60,15 @@ test('createNote, listNotes, setPinned, trashNote, restoreNote, purgeNote round-
 test('listNotes query matches title OR body text, case-insensitively, and still excludes trashed notes by default', async () => {
   await store.open({ dbName: `heldnote-test-${Date.now()}` });
 
-  // Title carries the query; body does not.
+  // Title carries the query; body does not. The title is user-set now
+  // (renameNote), so a real title match must not lean on the body's first
+  // line — the body here deliberately does NOT contain the query.
   const titleMatch = await store.createNote();
-  let rev = store.saveDraft(titleMatch.id, 'Zephyr notes\nsome body text');
+  let rev = store.saveDraft(titleMatch.id, 'plain first line\nsome body text');
   await store.flush(titleMatch.id, rev);
+  await store.renameNote(titleMatch.id, 'Zephyr plan.md');
 
-  // Body carries the query; title (first line) does not.
+  // Body carries the query; title does not.
   const bodyMatch = await store.createNote();
   rev = store.saveDraft(bodyMatch.id, 'Grocery list\nremember to buy a ZEPHYR fan');
   await store.flush(bodyMatch.id, rev);
@@ -93,12 +96,12 @@ test('listNotes query matches title OR body text, case-insensitively, and still 
   await store.close();
 });
 
-test('a note whose text is entirely empty is titled Untitled and still appears in the list', async () => {
+test('an empty note keeps its default name Untitled.txt and still appears in the list', async () => {
   await store.open({ dbName: `heldnote-test-${Date.now()}` });
   const note = await store.createNote();
   const list = await store.listNotes({});
   assertEquals(list.length, 1);
-  assertEquals(list[0].title, 'Untitled');
+  assertEquals(list[0].title, 'Untitled.txt');
   await store.close();
 });
 
@@ -970,7 +973,7 @@ test('memory mode: create a note, type into it, and read it back — the whole c
 
   const note = await store.createNote();
   assert(typeof note.id === 'string' && note.id.length > 0, 'expected a generated id');
-  assertEquals(note.title, 'Untitled');
+  assertEquals(note.title, 'Untitled.txt');
   assertEquals(note.pinned, false);
   assertEquals(note.deletedAt, null);
 
@@ -986,13 +989,13 @@ test('memory mode: create a note, type into it, and read it back — the whole c
 
   const reloaded = await store.getNote(note.id);
   assertEquals(reloaded.text, 'typed with no storage\nsecond line');
-  assertEquals(reloaded.title, 'typed with no storage', 'the title must still be derived from the first line');
+  assertEquals(reloaded.title, 'Untitled.txt', 'saveDraft must not touch the title — names are user-set, never derived');
   assertEquals(reloaded.localRev, rev);
 
   const list = await store.listNotes({});
   assertEquals(list.length, 1);
   assertEquals(list[0].id, note.id);
-  assertEquals(list[0].title, 'typed with no storage');
+  assertEquals(list[0].title, 'Untitled.txt');
 
   await store.close();
 });
@@ -1001,7 +1004,8 @@ test('memory mode: search covers title and body, and the trashed filter still ap
   await openInMemoryMode();
 
   const titleMatch = await store.createNote();
-  store.saveDraft(titleMatch.id, 'Zephyr notes\nsome body text');
+  store.saveDraft(titleMatch.id, 'plain first line\nsome body text');
+  await store.renameNote(titleMatch.id, 'Zephyr plan.md');
   const bodyMatch = await store.createNote();
   store.saveDraft(bodyMatch.id, 'Grocery list\nremember to buy a ZEPHYR fan');
   const noMatch = await store.createNote();
@@ -1249,4 +1253,171 @@ test('i18n: detectLanguage defaults to English for anything that is not Turkish'
   Object.defineProperty(navigator, 'language', { value: 'tr-TR', configurable: true });
   assertEquals(detectLanguage(), 'tr');
   if (original) Object.defineProperty(navigator, 'language', original);
+});
+
+// --- Independent filenames: renameNote and the frozen-title contract --------
+//
+// docs/filename-plan.md: the title is a user-set filename (e.g. "notes.md");
+// renameNote is its only writer after createNote. Nothing derived from the
+// text may ever touch it again.
+
+test('renameNote persists across reopen, bumps updatedAt, and leaves localRev and flush() untouched', async () => {
+  const dbName = `heldnote-test-${Date.now()}`;
+  await store.open({ dbName });
+  const note = await store.createNote();
+  let rev = store.saveDraft(note.id, 'some body');
+  await store.flush(note.id, rev);
+
+  const before = await store.getNote(note.id);
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  await store.renameNote(note.id, 'Zephyr plan.md');
+
+  const after = await store.getNote(note.id);
+  assertEquals(after.title, 'Zephyr plan.md');
+  assert(after.updatedAt > before.updatedAt, 'a rename must bump updatedAt (list order follows it)');
+  assertEquals(after.localRev, before.localRev, 'a rename must not touch the draft revision counter');
+
+  // flush() durability answers still hold after a rename.
+  rev = store.saveDraft(note.id, 'some body, extended');
+  const receipt = await withTimeout(store.flush(note.id, rev), 2000, 'flush hung after a rename');
+  assert(!receipt.error, 'expected a clean durable save after a rename');
+
+  await store.close();
+  await store.open({ dbName });
+  assertEquals((await store.getNote(note.id)).title, 'Zephyr plan.md', 'the name must survive a reopen');
+  await store.close();
+  indexedDB.deleteDatabase(dbName);
+});
+
+test('renameNote emits exactly one note-changed for the renamed note', async () => {
+  await store.open({ dbName: `heldnote-test-${Date.now()}` });
+  const note = await store.createNote();
+  const events = [];
+  const unsubscribe = store.subscribe((e) => events.push(e));
+  await store.renameNote(note.id, 'renamed.md');
+  unsubscribe();
+  const changed = events.filter((e) => e.type === 'note-changed');
+  assertEquals(changed.length, 1, 'expected exactly one note-changed from a rename');
+  assertEquals(changed[0].noteId, note.id);
+  await store.close();
+});
+
+test('renameNote validates and sanitizes: invalid-title on junk, separators stripped, 200-char cap', async () => {
+  await store.open({ dbName: `heldnote-test-${Date.now()}` });
+  const note = await store.createNote();
+
+  for (const bad of ['', '   ', '///', 42, null, undefined]) {
+    let code = null;
+    await store.renameNote(note.id, bad).catch((e) => { code = e.code; });
+    assertEquals(code, 'invalid-title', `expected invalid-title for ${JSON.stringify(bad)}`);
+  }
+  assertEquals((await store.getNote(note.id)).title, 'Untitled.txt', 'a rejected rename must leave the name untouched');
+
+  await store.renameNote(note.id, 'a/b\\c.md');
+  assertEquals((await store.getNote(note.id)).title, 'abc.md', 'path separators must be stripped at the store boundary');
+
+  await store.renameNote(note.id, `${'x'.repeat(300)}.md`);
+  assertEquals((await store.getNote(note.id)).title.length, 200, 'names cap at 200 chars, same as the old deriveTitle');
+
+  let code = null;
+  await store.renameNote('no-such-id', 'x.md').catch((e) => { code = e.code; });
+  assertEquals(code, 'not-found');
+
+  await store.close();
+});
+
+test('saveDraft and the quota path never touch a renamed title (draft-race regression)', async () => {
+  await store.open({ dbName: `heldnote-test-${Date.now()}` });
+  const note = await store.createNote();
+  await store.renameNote(note.id, 'kept-name.json');
+
+  // Normal durable save: title untouched.
+  let rev = store.saveDraft(note.id, 'first line that would once have become the title\nbody');
+  await store.flush(note.id, rev);
+  assertEquals((await store.getNote(note.id)).title, 'kept-name.json', 'a durable save must not rewrite the name');
+
+  // Quota failure path (prune, retry, memory-only): title still untouched.
+  setFaultInjection({ quotaOnStore: 'drafts' });
+  rev = store.saveDraft(note.id, 'text that will not persist');
+  await store.flush(note.id, rev).catch(() => {});
+  clearFaultInjection();
+  assertEquals((await store.getNote(note.id)).title, 'kept-name.json', 'the quota path must not rewrite the name either');
+
+  // And a recovery save after the fault clears.
+  rev = store.saveDraft(note.id, 'recovered text');
+  await store.flush(note.id, rev);
+  assertEquals((await store.getNote(note.id)).title, 'kept-name.json');
+
+  await store.close();
+});
+
+test('restoreVersion preserves the current name — titles are not versioned', async () => {
+  await store.open({ dbName: `heldnote-test-${Date.now()}` });
+  const note = await store.createNote();
+
+  let rev = store.saveDraft(note.id, 'version one text');
+  await store.flush(note.id, rev);
+  await store.commitVersion(note.id);
+  rev = store.saveDraft(note.id, 'version two text');
+  await store.flush(note.id, rev);
+  await store.commitVersion(note.id);
+
+  await store.renameNote(note.id, 'kept.md');
+  const versions = await store.listVersions(note.id, {});
+  const oldest = versions.reduce((min, v) => (v.seq < min.seq ? v : min));
+  await store.restoreVersion(note.id, oldest.seq);
+
+  const after = await store.getNote(note.id);
+  assertEquals(after.text, 'version one text', 'the restore itself must work');
+  assertEquals(after.title, 'kept.md', 'restoring old text must not rename the note');
+
+  await store.close();
+});
+
+test('merge import keeps the local name: an old backup title never clobbers a rename', async () => {
+  await store.open({ dbName: `heldnote-test-${Date.now()}` });
+  const note = await store.createNote();
+  const rev = store.saveDraft(note.id, 'stable body');
+  await store.flush(note.id, rev);
+
+  // Export while the note still has its default name…
+  const blob = await store.exportAll();
+  // …then rename locally and merge the old backup back in.
+  await store.renameNote(note.id, 'mine.md');
+  const result = await store.importAll(new File([blob], 'backup.json'), { mode: 'merge' });
+
+  assertEquals(result.notesAdded, 0, 'merge must skip the existing id wholesale');
+  assertEquals((await store.getNote(note.id)).title, 'mine.md', 'local rename must win over the imported title');
+
+  // A renamed note also round-trips through replace.
+  const renamedBlob = await store.exportAll();
+  await store.importAll(new File([renamedBlob], 'backup2.json'), { mode: 'replace' });
+  assertEquals((await store.getNote(note.id)).title, 'mine.md', 'the name must survive an export/replace round-trip');
+
+  await store.close();
+});
+
+test('memory mode: renameNote parity — persists, validates, and survives drafts and restores', async () => {
+  await openInMemoryMode();
+  const note = await store.createNote();
+
+  await store.renameNote(note.id, 'bellek.md');
+  assertEquals((await store.getNote(note.id)).title, 'bellek.md');
+
+  store.saveDraft(note.id, 'first line\nbody');
+  assertEquals((await store.getNote(note.id)).title, 'bellek.md', 'memory saveDraft must not rewrite the name');
+
+  await store.commitVersion(note.id);
+  store.saveDraft(note.id, 'second text');
+  await store.commitVersion(note.id);
+  const versions = await store.listVersions(note.id, {});
+  const oldest = versions.reduce((min, v) => (v.seq < min.seq ? v : min));
+  await store.restoreVersion(note.id, oldest.seq);
+  assertEquals((await store.getNote(note.id)).title, 'bellek.md', 'memory restore must not rename the note');
+
+  let code = null;
+  await store.renameNote(note.id, '   ').catch((e) => { code = e.code; });
+  assertEquals(code, 'invalid-title');
+
+  await store.close();
 });

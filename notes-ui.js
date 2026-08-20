@@ -160,6 +160,38 @@ export function renderNotesPanel(container, { onSelect, onImportComplete, onNote
       refresh();
     });
 
+    const duplicateButton = document.createElement('button');
+    duplicateButton.className = 'icon-button action-duplicate';
+    duplicateButton.innerHTML = ICONS.duplicate;
+    duplicateButton.setAttribute('aria-label', t('notes.duplicate'));
+    duplicateButton.title = t('notes.duplicate');
+    duplicateButton.addEventListener('click', async () => {
+      // Composed entirely from existing store APIs: a duplicate is a fresh
+      // note (own id, fresh history — versions are not copied) with the same
+      // text and the name plus " copy" before the extension. Pinned state is
+      // deliberately not copied. The filename literal is language-invariant,
+      // like the "Untitled.txt" default.
+      duplicateButton.disabled = true;
+      try {
+        const success = await runNoteAction(async () => {
+          const source = await store.getNote(note.id);
+          const dup = await store.createNote();
+          const rev = store.saveDraft(dup.id, source.text);
+          await store.flush(dup.id, rev);
+          const baseName = source.title || t('note.untitled');
+          const dot = baseName.lastIndexOf('.');
+          const dupName = dot > 0
+            ? `${baseName.slice(0, dot)} copy${baseName.slice(dot)}`
+            : `${baseName} copy`;
+          await store.renameNote(dup.id, dupName.slice(0, 200));
+          onSelect(dup.id);
+        });
+        if (success) refresh();
+      } finally {
+        duplicateButton.disabled = false;
+      }
+    });
+
     const trashButton = document.createElement('button');
     trashButton.className = 'icon-button action-trash';
     trashButton.innerHTML = ICONS.trash;
@@ -172,7 +204,7 @@ export function renderNotesPanel(container, { onSelect, onImportComplete, onNote
       refresh();
     });
 
-    actions.append(pinButton, trashButton);
+    actions.append(pinButton, duplicateButton, trashButton);
     li.append(openButton, actions);
     return li;
   }
@@ -207,10 +239,11 @@ export function renderNotesPanel(container, { onSelect, onImportComplete, onNote
   }
 
   async function refresh() {
-    // Guard against out-of-order completions: refresh() is called from
-    // per-keystroke paths (search, title changes), and an older listNotes()
-    // resolving after a newer one would paint stale titles — QA saw exactly
-    // that as "the sidebar shows only the first letter of the note".
+    // Guard against out-of-order completions: refresh() is still called from
+    // a per-keystroke path (search), and an older listNotes() resolving after
+    // a newer one would paint stale rows. (Titles are user-set now, so the
+    // original per-keystroke title race is gone — search keeps this guard
+    // load-bearing.)
     const token = ++refreshToken;
     const query = searchInput.value.trim() || undefined;
     const notes = await store.listNotes({ query, includeTrashed: viewingTrash });

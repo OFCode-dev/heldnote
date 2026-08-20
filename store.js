@@ -148,11 +148,6 @@ function newId() {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
-function deriveTitle(text) {
-  const firstLine = text.split('\n').find((line) => line.trim().length > 0);
-  return firstLine ? firstLine.trim().slice(0, 200) : 'Untitled';
-}
-
 function toNoteSummary(record) {
   return {
     id: record.id,
@@ -168,7 +163,7 @@ export async function createNote() {
   const id = newId();
   const now = Date.now();
   const noteRecord = {
-    id, title: 'Untitled', createdAt: now, updatedAt: now, localRev: 0,
+    id, title: 'Untitled.txt', createdAt: now, updatedAt: now, localRev: 0,
     pinned: false, pinKey: 0, isDeleted: 0,
   };
   const draftRecord = { noteId: id, text: '', localRev: 0, savedAt: now, byteLength: 0 };
@@ -178,7 +173,7 @@ export async function createNote() {
   tx.objectStore('drafts').put(draftRecord);
   await awaitTransactionComplete(tx);
 
-  return { id, title: 'Untitled', text: '', createdAt: now, updatedAt: now, pinned: false, deletedAt: null, localRev: 0 };
+  return { id, title: 'Untitled.txt', text: '', createdAt: now, updatedAt: now, pinned: false, deletedAt: null, localRev: 0 };
 }
 
 export async function listNotes({ query, includeTrashed = false, limit, before } = {}) {
@@ -287,6 +282,25 @@ export async function setPinned(id, on) {
 
 export async function trashNote(id) {
   await updateNoteFields(id, { isDeleted: 1, deletedAt: Date.now() });
+}
+
+// The title is a user-set filename (e.g. "notes.md") — independent of the text,
+// never derived from it (see docs/filename-plan.md). This is the ONLY writer of
+// title after createNote; the draft and restore paths deliberately leave it
+// alone. Sanitizing here (not just in the UI) makes the store the single choke
+// point: path separators and control characters can never reach a record.
+export async function renameNote(id, title) {
+  if (typeof title !== 'string') {
+    throw Object.assign(new Error('title must be a string'), { code: 'invalid-title' });
+  }
+  const clean = title.replace(/[/\\\u0000-\u001F]/g, '').trim().slice(0, 200);
+  if (!clean) {
+    throw Object.assign(new Error('title must not be empty'), { code: 'invalid-title' });
+  }
+  // updatedAt bumps on purpose: a rename is a deliberate modification, and the
+  // list sorts by updatedAt. localRev is NOT touched — it is the draft-revision
+  // counter, and moving it here would corrupt flush()'s durability answers.
+  await updateNoteFields(id, { title: clean, updatedAt: Date.now() });
 }
 
 export async function restoreNote(id) {
@@ -483,10 +497,9 @@ async function runDraftWrite(noteId) {
     let receipt;
     try {
       // Kept inside the try: a throw here (a non-string payload reaching
-      // deriveTitle, say) would otherwise escape the loop, skipping both
+      // TextEncoder, say) would otherwise escape the loop, skipping both
       // resolveWaiters and the inFlight reset, and wedge this note's queue.
       const byteLength = new TextEncoder().encode(text).length;
-      const title = deriveTitle(text);
 
       if (currentGeneration(noteId) !== generationAtQueue) {
         throw Object.assign(new Error('stale write superseded by a restore'), { code: 'stale-generation' });
@@ -517,7 +530,9 @@ async function runDraftWrite(noteId) {
         throw Object.assign(new Error(`note ${noteId} not found`), { code: 'not-found' });
       }
       tx.objectStore('drafts').put({ noteId, text, localRev: rev, savedAt: now, byteLength });
-      noteRecord.title = title;
+      // title is deliberately NOT touched: it is a user-set filename now
+      // (renameNote is its only writer). A draft write that rewrote it would
+      // silently revert a rename on the very next keystroke.
       noteRecord.updatedAt = now;
       noteRecord.localRev = rev;
       noteStore.put(noteRecord);
@@ -559,10 +574,9 @@ async function runDraftWrite(noteId) {
           emit({ type: 'save-failed', ...receipt });
         } else {
           try {
-            // Recomputed rather than reused: byteLength/title above are
-            // scoped to the outer try block and are not visible here.
+            // Recomputed rather than reused: byteLength above is scoped to
+            // the outer try block and is not visible here.
             const retryByteLength = new TextEncoder().encode(text).length;
-            const retryTitle = deriveTitle(text);
             const retryTx = openTransaction(activeConn(), ['notes', 'drafts'], 'readwrite', { durability: 'strict' });
             // Same read-before-write ordering as the first attempt, for the
             // same reason.
@@ -572,7 +586,7 @@ async function runDraftWrite(noteId) {
               throw Object.assign(new Error(`note ${noteId} not found`), { code: 'not-found' });
             }
             retryTx.objectStore('drafts').put({ noteId, text, localRev: rev, savedAt: now, byteLength: retryByteLength });
-            retryNoteRecord.title = retryTitle;
+            // Same rule as the first attempt: the user-set title is not touched.
             retryNoteRecord.updatedAt = now;
             retryNoteRecord.localRev = rev;
             retryNoteStore.put(retryNoteRecord);
@@ -927,7 +941,8 @@ async function runRestore(id, target, currentRev) {
   const draftStore = tx.objectStore('drafts');
   draftStore.put({ noteId: id, text: target.text, localRev: nextRev, savedAt: at, byteLength });
 
-  noteRecord.title = deriveTitle(target.text);
+  // The user-set title survives a restore: version records carry no title, so
+  // titles were never versioned — restoring text must not rename the note.
   noteRecord.updatedAt = at;
   noteRecord.localRev = nextRev;
   noteStore.put(noteRecord);
@@ -1677,11 +1692,11 @@ function memoryCreateNote() {
   const id = newId();
   const now = Date.now();
   memoryFallback.notes.set(id, {
-    id, title: 'Untitled', createdAt: now, updatedAt: now, localRev: 0,
+    id, title: 'Untitled.txt', createdAt: now, updatedAt: now, localRev: 0,
     pinned: false, pinKey: 0, isDeleted: 0,
   });
   memoryFallback.drafts.set(id, { noteId: id, text: '', localRev: 0, savedAt: now, byteLength: 0 });
-  return { id, title: 'Untitled', text: '', createdAt: now, updatedAt: now, pinned: false, deletedAt: null, localRev: 0 };
+  return { id, title: 'Untitled.txt', text: '', createdAt: now, updatedAt: now, pinned: false, deletedAt: null, localRev: 0 };
 }
 
 function memoryListNotes({ query, includeTrashed = false, limit, before } = {}) {
@@ -1765,14 +1780,13 @@ function memorySaveDraft(id, text) {
     const noteRecord = memoryFallback.notes.get(id);
     if (!noteRecord) throw notFound(`note ${id} not found`);
 
-    // deriveTitle before any mutation: a non-string payload throws here, and
-    // must leave the record untouched rather than half-updated.
-    const title = deriveTitle(text);
+    // TextEncoder before any mutation: a non-string payload throws here, and
+    // must leave the record untouched rather than half-updated. The user-set
+    // title is deliberately not touched (renameNote is its only writer).
     const now = Date.now();
     const byteLength = new TextEncoder().encode(text).length;
 
     memoryFallback.drafts.set(id, { noteId: id, text, localRev: nextRev, savedAt: now, byteLength });
-    noteRecord.title = title;
     noteRecord.updatedAt = now;
     noteRecord.localRev = nextRev;
 
@@ -1867,7 +1881,7 @@ function memoryRestoreVersion(id, seq) {
   versions.set(restoredSeq, { noteId: id, seq: restoredSeq, at, sourceRev: nextRev, text: target.text, byteLength });
 
   memoryFallback.drafts.set(id, { noteId: id, text: target.text, localRev: nextRev, savedAt: at, byteLength });
-  noteRecord.title = deriveTitle(target.text);
+  // Same rule as the persisted path: a restore never renames the note.
   noteRecord.updatedAt = at;
   noteRecord.localRev = nextRev;
 

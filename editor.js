@@ -3,16 +3,6 @@ import * as store from './store.js';
 import { t } from './i18n.js';
 import { ICONS } from './icons.js';
 
-// Mirrors store.js's deriveTitle() for change-detection only: this value is
-// never displayed as the canonical title in the note list (that always renders
-// what store.js actually derived and persisted); here it also feeds the
-// editor's own heading, where a small drift against store.js's algorithm is
-// harmless — worst case a heading that lags one refresh behind the list.
-function deriveTitle(text) {
-  const firstLine = text.split('\n').find((line) => line.trim().length > 0);
-  return firstLine ? firstLine.trim().slice(0, 200) : 'Untitled';
-}
-
 function countWords(text) {
   const matches = text.match(/\S+/g);
   return matches ? matches.length : 0;
@@ -68,7 +58,7 @@ export function renderEditor(container, noteId, { onRevChange, onTitleChange, on
     <div class="editor-sheet">
       <div class="editor-header">
         <button id="editor-back" aria-label="${t('nav.backToNotes')}">${ICONS.chevronLeft}<span>${t('nav.backToNotes')}</span></button>
-        <h1 class="note-heading"></h1>
+        <h1 class="note-heading"><input id="note-name" aria-label="${t('editor.rename')}" title="${t('editor.rename')}" maxlength="200" spellcheck="false" autocomplete="off"></h1>
         <div class="editor-tools" role="toolbar" aria-label="${t('editor.toolsLabel')}">
           <button id="tool-copy" title="${t('editor.copy')}" aria-label="${t('editor.copy')}"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg></button>
           <button id="tool-download" title="${t('editor.download')}" aria-label="${t('editor.download')}"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12m0 0-5-5m5 5 5-5M4 21h16"/></svg></button>
@@ -95,7 +85,7 @@ export function renderEditor(container, noteId, { onRevChange, onTitleChange, on
     </div>
   `;
   const textarea = container.querySelector('#editor');
-  const heading = container.querySelector('.note-heading');
+  const nameInput = container.querySelector('#note-name');
   const historyButton = container.querySelector('#toggle-history');
   const countsEl = document.getElementById('status-counts');
   const findBar = container.querySelector('#find-bar');
@@ -143,12 +133,62 @@ export function renderEditor(container, noteId, { onRevChange, onTitleChange, on
   let idleTimer = null;
   let maxWaitTimer = null;
   let destroyed = false;
-  let lastReportedTitle = null;
 
-  function renderHeading(text) {
-    const title = deriveTitle(text);
-    heading.textContent = title === 'Untitled' ? t('note.untitled') : title;
+  // --- The filename control (docs/filename-plan.md §1.2) -----------------
+  // The name is user-set and independent of the text; renameNote is its only
+  // writer. committedName is the last value the store confirmed (or loaded) —
+  // Escape and empty-commit revert to it, and downloads read it.
+  let committedName = '';
+
+  function commitName() {
+    const next = nameInput.value.replace(/[/\\]/g, '').trim().slice(0, 200);
+    if (!next) {
+      nameInput.value = committedName;
+      return;
+    }
+    if (next === committedName) {
+      nameInput.value = next;
+      return;
+    }
+    nameInput.value = next;
+    store.renameNote(noteId, next).then(() => {
+      committedName = next;
+      // The tab title (and anything else watching) reflects only a rename
+      // the store confirmed.
+      if (onTitleChange) onTitleChange(next);
+    }).catch((error) => {
+      console.error('heldnote: rename failed', error);
+      nameInput.value = committedName;
+      if (onError) onError(t('error.renameFailed'));
+    });
   }
+
+  nameInput.addEventListener('focus', () => {
+    // QWN's affordance: select the basename, keep the extension, so typing
+    // replaces the name without clobbering ".md". setTimeout(0) defeats the
+    // browser's own select-all-on-focus. If the user has already started
+    // typing by the time this fires, their edit wins — re-selecting under a
+    // fast typist would swallow keystrokes.
+    const value = nameInput.value;
+    const dot = value.lastIndexOf('.');
+    setTimeout(() => {
+      if (nameInput.value !== value || document.activeElement !== nameInput) return;
+      nameInput.setSelectionRange(0, dot > 0 ? dot : value.length);
+    }, 0);
+  });
+  nameInput.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      nameInput.blur(); // blur commits; then hand focus back to the text
+      textarea.focus();
+    } else if (event.key === 'Escape') {
+      event.stopPropagation(); // must not reach the global Escape (find bar)
+      nameInput.value = committedName;
+      nameInput.blur();
+      textarea.focus();
+    }
+  });
+  nameInput.addEventListener('blur', commitName);
 
   function renderCounts(text) {
     if (!countsEl) return;
@@ -163,16 +203,17 @@ export function renderEditor(container, noteId, { onRevChange, onTitleChange, on
     renderCounts(textarea.value);
   }
 
-  function reportTitleIfChanged(text) {
-    if (!onTitleChange) return;
-    const title = deriveTitle(text);
-    if (title === lastReportedTitle) return;
-    lastReportedTitle = title;
-    onTitleChange(title);
-  }
-
   store.getNote(noteId).then((note) => {
     if (destroyed) return;
+    // Seed the filename control. The || fallback is display-only, for
+    // legacy/corrupt records whose title was deleted — it is never
+    // auto-committed as a rename.
+    const name = note.title || 'Untitled.txt';
+    committedName = name;
+    // Never clobber an in-progress rename: the user may already be typing in
+    // the name input while this async load resolves.
+    if (document.activeElement !== nameInput) nameInput.value = name;
+    if (onTitleChange) onTitleChange(name);
     // Anything typed during the load already went through onInput and is
     // saved as this note's draft, so for a brand-new (empty) note the typed
     // text IS the newer truth — overwriting it with the stored '' would
@@ -181,9 +222,7 @@ export function renderEditor(container, noteId, { onRevChange, onTitleChange, on
     const typedDuringLoad = textarea.value;
     if (note.text || !typedDuringLoad) {
       textarea.value = note.text;
-      renderHeading(note.text);
       renderCounts(note.text);
-      lastReportedTitle = deriveTitle(note.text);
       if (onRevChange) onRevChange(note.localRev);
     }
   }).catch((error) => {
@@ -221,12 +260,12 @@ export function renderEditor(container, noteId, { onRevChange, onTitleChange, on
     }
   }
 
+  // Typing touches the text only — never the name. This is the visible proof
+  // that the filename is independent of the first line.
   function onInput() {
     const rev = store.saveDraft(noteId, textarea.value);
     if (onRevChange) onRevChange(rev);
-    renderHeading(textarea.value);
     renderCounts(textarea.value);
-    reportTitleIfChanged(textarea.value);
     scheduleVersionCommit();
   }
 
@@ -251,13 +290,18 @@ export function renderEditor(container, noteId, { onRevChange, onTitleChange, on
   });
 
   container.querySelector('#tool-download').addEventListener('click', () => {
-    const title = deriveTitle(textarea.value);
-    const safe = (title === 'Untitled' ? 'not' : title).replace(/[^\p{L}\p{N} _-]/gu, '').trim().slice(0, 60) || 'not';
+    // Commit any in-progress name edit first: Ctrl+S straight after typing a
+    // new name must download under that name, not the stale one.
+    commitName();
+    // The filename is used verbatim — "Untitled.json goes as-is". No .txt
+    // appending, no character mangling beyond the separators commitName and
+    // the store already strip. Blob type stays text/plain regardless of
+    // extension (MIME-from-extension is out of scope).
     const blob = new Blob([textarea.value], { type: 'text/plain;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `${safe}.txt`;
+    a.download = nameInput.value || committedName || 'Untitled.txt';
     document.body.appendChild(a);
     a.click();
     a.remove();

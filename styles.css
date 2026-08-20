@@ -316,7 +316,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, summary:focus
   width: 100%;
   text-align: left;
   padding: 0.45rem 0.55rem;
-  padding-right: 3.9rem;
+  /* Clears the pin + duplicate + trash action cluster. */
+  padding-right: 6rem;
 }
 .note-item .note-title {
   display: block;
@@ -511,9 +512,31 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, summary:focus
   margin: 0;
   min-width: 0;
   flex: 1;
-  white-space: nowrap;
-  overflow: hidden;
+}
+
+/* The filename control (docs/filename-plan.md §1.2): an always-editable input
+   that reads as the note heading. The dotted underline is the at-rest
+   editability cue — it must be visible without hover, because hover does not
+   exist on touch devices. */
+#note-name {
+  font: inherit;
+  display: block;
+  width: 100%;
+  min-width: 0;
+  color: var(--text);
+  background: transparent;
+  border: none;
+  border-bottom: 1px dotted var(--border);
+  border-bottom-color: color-mix(in srgb, var(--text-secondary) 45%, transparent);
+  border-radius: 0;
+  padding: 0 0 2px;
   text-overflow: ellipsis;
+}
+#note-name:hover { border-bottom-color: var(--text-secondary); }
+#note-name:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+  border-bottom-color: transparent;
 }
 
 /* Mobile back control — hidden at >=768px where the list is always visible. */

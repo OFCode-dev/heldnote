@@ -72,10 +72,9 @@ function renderStatus(event) {
   if (event.type === 'saved') {
     revisionEl.className = 'state-saved';
     revisionEl.textContent = `${t('status.saved')} · ${new Date(event.completedAt).toLocaleTimeString()}`;
-    // The sidebar derives titles from what is persisted, so it can lag the
-    // editor mid-typing (QA: "the sidebar shows only the first letter").
-    // A durable save is the exact moment the persisted title catches up —
-    // refresh the list then, debounced so a burst of flushes is one repaint.
+    // Titles are user-set now and never change on save — but rows still show
+    // "last modified" and sort by updatedAt, which every durable save bumps.
+    // Refresh the list then, debounced so a burst of flushes is one repaint.
     if (notesPanelHandle) {
       if (savedRefreshTimer) clearTimeout(savedRefreshTimer);
       savedRefreshTimer = setTimeout(() => {
@@ -109,10 +108,10 @@ function renderStatus(event) {
     // before this subscriber even exists.
     addNotice(t(STORAGE_REASON_KEYS[event.reason] || 'error.storageUnavailable'));
   } else if (event.type === 'note-changed') {
-    // Emitted by setPinned/trashNote/restoreNote/purgeNote/restoreVersion.
-    // None of those carry enough information here to update the list in
-    // place, and none of them fire anywhere near per-keystroke frequency, so
-    // a full list refresh on each is cheap and correct.
+    // Emitted by setPinned/trashNote/restoreNote/purgeNote/restoreVersion/
+    // renameNote. None of those carry enough information here to update the
+    // list in place, and none of them fire anywhere near per-keystroke
+    // frequency, so a full list refresh on each is cheap and correct.
     if (notesPanelHandle) notesPanelHandle.refresh();
   }
 }
@@ -170,8 +169,23 @@ async function boot() {
   const mobileLayout = window.matchMedia('(max-width: 767px)');
   appEl.dataset.view = 'list';
 
+  // --- Browser tab title (docs/filename-plan.md §1.5) ---------------------
+  // "{name} — Heldnote" while a note is on screen; the index.html baseline
+  // otherwise. On a phone the list view counts as "no note on screen" even
+  // though a note is loaded behind it.
+  const DEFAULT_DOC_TITLE = document.title;
+  let currentNoteTitle = null;
+
+  function applyDocTitle() {
+    const onList = mobileLayout.matches && appEl.dataset.view !== 'editor';
+    document.title = currentNoteTitle && !onList
+      ? `${currentNoteTitle} — Heldnote`
+      : DEFAULT_DOC_TITLE;
+  }
+
   function setView(view) {
     appEl.dataset.view = view;
+    applyDocTitle();
   }
 
   // Opening a note on a phone gets a real history entry, so the device back
@@ -255,7 +269,13 @@ async function boot() {
     if (activeEditor) activeEditor.destroy();
     activeEditor = renderEditor(document.getElementById('editor-panel'), id, {
       onRevChange: (rev) => { currentNoteRev = rev; },
-      onTitleChange: () => { if (notesPanelHandle) notesPanelHandle.refresh(); },
+      // Fires on load (with the stored name) and once per confirmed rename.
+      // Tab title only: the sidebar already refreshes via the note-changed
+      // event renameNote emits — a second refresh here would be redundant.
+      onTitleChange: (title) => {
+        currentNoteTitle = title;
+        applyDocTitle();
+      },
       onError: addNotice,
       historyOpen,
       onToggleHistory: () => {
@@ -288,12 +308,13 @@ async function boot() {
   function closeEditor() {
     currentNoteId = null;
     currentNoteRev = 0;
+    currentNoteTitle = null;
     if (activeEditor) { activeEditor.destroy(); activeEditor = null; }
     renderEmptyState();
     document.getElementById('history-panel').hidden = true;
     if (notesPanelHandle) notesPanelHandle.setActive(null);
     // The note this view was showing is gone; on a phone that means back to
-    // the list, not an empty sheet.
+    // the list, not an empty sheet. setView also restores the tab title.
     setView('list');
   }
 
@@ -322,7 +343,7 @@ async function boot() {
     }
   }
 
-  // Called after a trash purge. Unlike the other four note-changed sources,
+  // Called after a trash purge. Unlike the other note-changed sources,
   // a purge can remove the very note the editor has open, and that is not
   // something a plain list refresh fixes.
   function handleNoteDeleted(id) {
