@@ -104,6 +104,9 @@ const STRINGS = {
     'toast.downloaded': 'Saved',
     'drive.errorRefusedEmpty': 'This device has no notes yet — restore from Drive first; the existing backup was not overwritten.',
     'drive.failedSince': 'Backup is failing — notes changed since the last successful backup. Click "Back up to Drive" to retry',
+    'nav.backToNotes': 'Notes',
+    'notes.clearSearch': 'Clear search',
+    'history.close': 'Close history',
   },
   tr: {
     'status.saving': 'Kaydediliyor…',
@@ -210,6 +213,9 @@ const STRINGS = {
     'drive.errorRefusedEmpty': "Bu cihazda henüz not yok — önce Drive'dan geri yükle; mevcut yedeğin üzerine yazılmadı.",
     'drive.failedSince': "Yedekleme başarısız oluyor — son başarılı yedekten sonra notlar değişti. Tekrar denemek için \"Drive'a yedekle\"ye tıkla",
     'backup.exportSuccess': 'Yedek dışa aktarıldı',
+    'nav.backToNotes': 'Notlar',
+    'notes.clearSearch': 'Aramayı temizle',
+    'history.close': 'Geçmişi kapat',
   },
 };
 

@@ -1,6 +1,7 @@
 // history-ui.js
 import * as store from './store.js';
 import { t } from './i18n.js';
+import { ICONS } from './icons.js';
 
 // A restore can legitimately reject with code 'restore-in-progress' when it
 // collides with either another restore or (far more commonly) the editor's
@@ -27,9 +28,20 @@ async function restoreWithRetry(noteId, seq) {
   }
 }
 
-export function renderHistoryPanel(container, noteId, { onRestore } = {}) {
+export function renderHistoryPanel(container, noteId, { onRestore, onClose } = {}) {
   container.hidden = false;
-  container.innerHTML = `<h2>${t('history.title')}</h2><ul id="version-list"></ul><div id="version-preview"></div><div id="history-notice" role="alert" hidden></div>`;
+  // The close control matters most on small screens, where this panel is a
+  // full-height sheet covering the History toggle that opened it. At the
+  // >=1024px third-column layout CSS hides it (the toggle is visible there).
+  container.innerHTML = `
+    <div class="history-head">
+      <h2>${t('history.title')}</h2>
+      <button id="history-close" aria-label="${t('history.close')}" title="${t('history.close')}">${ICONS.close}</button>
+    </div>
+    <ul id="version-list"></ul><div id="version-preview"></div><div id="history-notice" role="alert" hidden></div>`;
+  container.querySelector('#history-close').addEventListener('click', () => {
+    if (onClose) onClose();
+  });
   const list = container.querySelector('#version-list');
   const preview = container.querySelector('#version-preview');
   // Separate from `preview`, and deliberately NOT gated by previewToken below:

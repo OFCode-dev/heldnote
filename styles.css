@@ -1,32 +1,73 @@
-/* styles.css — Quiet Assurance. Tokens and rules from brand-brief.md §4–§7. */
+/* styles.css — Daylight Paper. Tokens and rules from docs/redesign-plan.md.
+   Light-first, warm, editorial: paper that happens to be in a browser.
+   Mobile-first: base styles are the <768px single-pane shell; wider
+   layouts are added in min-width queries (redesign-plan §4). */
 
+/* ---- Writing face ---------------------------------------------------------
+   Self-hosted (redesign-plan §3): the writing surface must not depend on a
+   third-party request — offline is exactly when a local-first notepad is
+   most likely to be open. latin-ext carries Turkish (ğ ş İ ı). */
+@font-face {
+  font-family: "Source Serif 4";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("fonts/source-serif-4-latin.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "Source Serif 4";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("fonts/source-serif-4-latin-ext.woff2") format("woff2");
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+
+/* ---- Tokens ---------------------------------------------------------------
+   Light is the default scheme. Every value here was contrast-measured on
+   2026-08-19 (see redesign-plan §2/§5 and the implementation notes):
+   - --text-secondary is #716B66, NOT the plan's #78716C: the plan measured
+     that one only on --bg (4.59:1); on --panel-bg it is 4.44:1 and fails.
+     #716B66 measures 4.86:1 on panel, 5.07:1 on bg.
+   - --accent (#B45309, 4.84:1 on bg) is for text, links and focus;
+     --accent-surface (#D97706, 3.07:1 vs bg) is for fills and icons ONLY.
+     Do not collapse them (redesign-plan §2).
+   - The functional set (--ok/--info/--warn/--danger) is deliberately not
+     the brand accent; every use pairs with a label or icon, never color
+     alone (redesign-plan §5 — the two-fact honesty rule). */
 :root {
-  color-scheme: light dark;
-  --ink-950: #0E1116;
-  --ink-900: #171B22;
-  --ink-800: #202630;
-  --paper-100: #F2F0E8;
-  --mist-400: #9CA6B4;
-  --stone-300: #D7D4CC;
-  --paper-50: #F6F4EE;
-  --graphite-900: #20242A;
-  --sage-500: #78A98D;
-  --blue-500: #7295BA;
-  --cyan-500: #73B8C8;
-  --amber-500: #D4A65A;
-  --coral-500: #D87970;
+  color-scheme: light;
 
-  --bg: var(--ink-950);
-  --panel-bg: var(--ink-900);
-  --elevated-bg: var(--ink-800);
-  --text: var(--paper-100);
-  --text-secondary: var(--mist-400);
-  --border: var(--ink-800);
-  --hover-bg: rgba(156, 166, 180, 0.08);
-  --active-bg: rgba(156, 166, 180, 0.14);
+  --bg: #FFFBEB;
+  --panel-bg: #F6F6F6;
+  --elevated-bg: #FFFFFF;
+  --text: #0F172A;
+  --text-secondary: #716B66;
+  --border: #EEEDED;
+  --accent: #B45309;
+  --accent-surface: #D97706;
+  --on-accent: #1C1917;        /* 5.49:1 on --accent-surface */
+  --hover-bg: rgba(28, 25, 23, 0.05);
+  --active-bg: rgba(28, 25, 23, 0.09);
+  --selection: rgba(217, 119, 6, 0.22);
+  --sheet-shadow: 0 1px 2px rgba(28, 25, 23, 0.04), 0 8px 24px rgba(28, 25, 23, 0.05);
+
+  /* Functional states — measured on both --bg and --panel-bg (4.5:1+). */
+  --ok: #15803D;
+  --info: #1D4ED8;
+  --warn: #92400E;
+  --danger: #B91C1C;
 
   --font-ui: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  --font-editor: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+  --font-writing: "Source Serif 4", Charter, "Bitstream Charter", "Iowan Old Style", Georgia, serif;
+
+  /* Spacing scale (density 5 / standard): 16 / 24 / 32 / 48 / 64. */
+  --space-1: 16px;
+  --space-2: 24px;
+  --space-3: 32px;
+  --space-4: 48px;
+  --space-5: 64px;
 
   --radius-control: 6px;
   --radius-panel: 8px;
@@ -35,29 +76,51 @@
   --motion-panel: 210ms;
 }
 
-:root[data-theme="light"] {
-  color-scheme: light;
-  --bg: var(--paper-50);
-  --panel-bg: #EFEDE5;
-  --elevated-bg: #FFFFFF;
-  --text: var(--graphite-900);
-  --text-secondary: #66707D;
-  --border: var(--stone-300);
-  --hover-bg: rgba(32, 36, 42, 0.05);
-  --active-bg: rgba(32, 36, 42, 0.09);
+/* Dark — the warm counterpart (redesign-plan §2), secondary mode.
+   Measured 2026-08-19: all text/functional values clear 4.5:1 on every
+   surface they appear on. --warn is #F97316, NOT the light value: on dark
+   panels #92400E is illegible, and #F97316 is the most separable orange
+   from the #FBBF24 accent that still passes (they remain close in
+   luminance — one more reason warning states always carry a label). */
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #1C1917;
+  --panel-bg: #262220;
+  --elevated-bg: #2E2A27;
+  --text: #FAF9F6;
+  --text-secondary: #A8A29E;
+  --border: #3A3532;
+  --accent: #FBBF24;
+  --accent-surface: #D97706;
+  --hover-bg: rgba(250, 249, 246, 0.06);
+  --active-bg: rgba(250, 249, 246, 0.11);
+  --selection: rgba(251, 191, 36, 0.30);
+  --sheet-shadow: 0 1px 2px rgba(0, 0, 0, 0.2), 0 8px 24px rgba(0, 0, 0, 0.25);
+  --ok: #4ADE80;
+  --info: #60A5FA;
+  --warn: #F97316;
+  --danger: #F87171;
 }
 
-@media (prefers-color-scheme: light) {
-  :root:not([data-theme="dark"]) {
-    color-scheme: light;
-    --bg: var(--paper-50);
-    --panel-bg: #EFEDE5;
-    --elevated-bg: #FFFFFF;
-    --text: var(--graphite-900);
-    --text-secondary: #66707D;
-    --border: var(--stone-300);
-    --hover-bg: rgba(32, 36, 42, 0.05);
-    --active-bg: rgba(32, 36, 42, 0.09);
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --bg: #1C1917;
+    --panel-bg: #262220;
+    --elevated-bg: #2E2A27;
+    --text: #FAF9F6;
+    --text-secondary: #A8A29E;
+    --border: #3A3532;
+    --accent: #FBBF24;
+    --accent-surface: #D97706;
+    --hover-bg: rgba(250, 249, 246, 0.06);
+    --active-bg: rgba(250, 249, 246, 0.11);
+    --selection: rgba(251, 191, 36, 0.30);
+    --sheet-shadow: 0 1px 2px rgba(0, 0, 0, 0.2), 0 8px 24px rgba(0, 0, 0, 0.25);
+    --ok: #4ADE80;
+    --info: #60A5FA;
+    --warn: #F97316;
+    --danger: #F87171;
   }
 }
 
@@ -76,6 +139,8 @@ body {
   line-height: 1.45;
 }
 
+::selection { background: var(--selection); }
+
 button {
   font: inherit;
   color: inherit;
@@ -83,69 +148,76 @@ button {
   border: none;
   border-radius: var(--radius-control);
   cursor: pointer;
-  transition: background var(--motion-control) ease, border-color var(--motion-control) ease;
+  transition: background var(--motion-control) ease, border-color var(--motion-control) ease, color var(--motion-control) ease;
 }
-button:focus-visible, input:focus-visible, textarea:focus-visible, summary:focus-visible {
-  outline: 2px solid var(--cyan-500);
+button svg { flex: none; }
+button:focus-visible, input:focus-visible, textarea:focus-visible, summary:focus-visible, a:focus-visible {
+  /* Focus uses --accent, never --accent-surface (redesign-plan §10). */
+  outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
 
-/* ---- Frame -------------------------------------------------------------- */
+/* ---- Frame ----------------------------------------------------------------
+   Base = mobile: one pane at a time. #app carries data-view="list"|"editor";
+   app.js owns it (including real back behavior via history state). */
 
 #app {
-  display: grid;
-  grid-template-columns: 264px minmax(0, 1fr) auto;
-  grid-template-rows: auto 1fr auto;
+  display: flex;
+  flex-direction: column;
   height: 100vh;
   height: 100dvh;
 }
-#app-notices { grid-column: 1 / -1; grid-row: 1; }
 #app-notices:empty { display: none; }
 #app-notices .app-notice {
   padding: 0.55rem 1rem;
   border-bottom: 1px solid var(--border);
   background: var(--elevated-bg);
-  color: var(--coral-500);
+  color: var(--danger);
   font-size: 13px;
 }
 /* Browser-retention information (e.g. the standing Safari notice) is never
-   colored like a save failure — brand-brief.md §4's usage rule keeps those
-   two truths visually separate everywhere else in this app. */
-#app-notices .app-notice.tone-info { color: var(--blue-500); }
+   colored like a save failure — the two-fact honesty rule keeps those
+   truths visually separate everywhere in this app (redesign-plan §5). */
+#app-notices .app-notice.tone-info { color: var(--info); }
 
-/* ---- Sidebar ------------------------------------------------------------ */
+/* Single-pane switching. No data-view attribute behaves as the list view,
+   so the pre-boot frame never flashes an empty editor. */
+#app:not([data-view="editor"]) #editor-panel { display: none; }
+#app[data-view="editor"] #notes-panel { display: none; }
+
+/* ---- Sidebar / notes list ------------------------------------------------ */
 
 #notes-panel {
-  grid-column: 1;
-  grid-row: 2;
+  flex: 1;
   min-height: 0;
   display: flex;
   flex-direction: column;
   background: var(--panel-bg);
-  border-right: 1px solid var(--border);
   position: relative; /* anchors the undo-banner overlay */
+  /* The panel itself scrolls on small screens; the action row is sticky. */
+  overflow-y: auto;
 }
 
 #brand {
   display: flex;
   align-items: center;
   gap: 0.6rem;
-  padding: 0.9rem 1rem 0.75rem;
+  padding: 0.9rem var(--space-1) 0.75rem;
 }
 #brand svg { flex: none; display: block; }
-#brand .brand-mark-stroke { stroke: var(--sage-500); }
 #brand .wordmark {
-  font-size: 17px;
-  font-weight: 600;
-  letter-spacing: 0.04em;
+  font-family: var(--font-writing);
+  font-size: 19px;
+  font-weight: 400;
+  letter-spacing: 0.01em;
   color: var(--text);
 }
 #brand .brand-spacer { flex: 1; }
 
 #theme-toggle {
-  padding: 0.3rem 0.45rem;
+  padding: 0.35rem 0.45rem;
   color: var(--text-secondary);
-  line-height: 1;
+  line-height: 0;
 }
 #theme-toggle:hover { background: var(--hover-bg); color: var(--text); }
 
@@ -154,25 +226,31 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, summary:focus
   flex-direction: column;
   gap: 0.5rem;
   padding: 0 0.75rem 0.75rem;
+  /* New note + Search stay reachable while the panel scrolls. */
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  background: var(--panel-bg);
+  padding-top: 0.5rem;
 }
 
 #new-note {
-  padding: 0.5rem 0.75rem;
+  padding: 0.55rem 0.75rem;
   font-weight: 600;
   text-align: center;
-  color: var(--ink-950);
-  background: var(--sage-500);
+  color: var(--on-accent);
+  background: var(--accent-surface);
   border: 1px solid transparent;
 }
-#new-note:hover { filter: brightness(1.07); }
-#new-note:active { filter: brightness(0.96); }
+#new-note:hover { filter: brightness(1.06); }
+#new-note:active { filter: brightness(0.95); }
 
 #search {
   font: inherit;
   width: 100%;
   padding: 0.45rem 0.65rem;
   color: var(--text);
-  background: var(--bg);
+  background: var(--elevated-bg);
   border: 1px solid var(--border);
   border-radius: var(--radius-control);
 }
@@ -182,8 +260,9 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, summary:focus
   list-style: none;
   margin: 0;
   padding: 0 0.5rem;
-  overflow-y: auto;
-  flex: 1;
+  /* Mobile: the panel is the scroll container and the list flows in it.
+     >=768px flips this: the list scrolls internally, the footer stays put. */
+  flex: none;
   min-height: 0;
   scrollbar-width: thin;
   scrollbar-color: var(--border) transparent;
@@ -198,11 +277,28 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, summary:focus
   color: var(--text-secondary);
   padding: 0.7rem 0.5rem 0.25rem;
 }
+/* Empty states are invitations to act: message + action (redesign-plan §6). */
 #note-list .list-empty {
   padding: 0.75rem 0.5rem;
   color: var(--text-secondary);
   font-size: 13px;
 }
+#note-list .list-empty .empty-query {
+  display: block;
+  color: var(--text);
+  margin-top: 2px;
+  word-break: break-word;
+}
+#note-list .list-empty .empty-action {
+  display: inline-block;
+  margin-top: 0.5rem;
+  padding: 0.3rem 0.6rem;
+  font-size: 12.5px;
+  border: 1px solid var(--border);
+  background: var(--elevated-bg);
+  color: var(--text);
+}
+#note-list .list-empty .empty-action:hover { background: var(--hover-bg); }
 
 .note-item {
   position: relative;
@@ -212,7 +308,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, summary:focus
 .note-item:hover { background: var(--hover-bg); }
 .note-item.is-active {
   background: var(--active-bg);
-  box-shadow: inset 2px 0 0 var(--sage-500);
+  box-shadow: inset 2px 0 0 var(--accent-surface);
 }
 
 .note-item .note-open {
@@ -220,7 +316,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, summary:focus
   width: 100%;
   text-align: left;
   padding: 0.45rem 0.55rem;
-  padding-right: 3.6rem;
+  padding-right: 3.9rem;
 }
 .note-item .note-title {
   display: block;
@@ -248,12 +344,11 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, summary:focus
 }
 .note-item:hover .note-actions,
 .note-item:focus-within .note-actions { opacity: 1; }
-.note-item.is-pinned .note-actions .action-pin { opacity: 1; }
+.note-item.is-pinned .note-actions .action-pin { opacity: 1; color: var(--accent); }
 
 .icon-button {
-  padding: 0.35rem 0.5rem;
-  font-size: 15px;
-  line-height: 1;
+  padding: 0.4rem 0.45rem;
+  line-height: 0;
   color: var(--text-secondary);
 }
 /* No hover on touch devices — the actions must simply be there. */
@@ -261,7 +356,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, summary:focus
   .note-item .note-actions { opacity: 1; }
 }
 .icon-button:hover { background: var(--active-bg); color: var(--text); }
-.icon-button.action-trash:hover { color: var(--coral-500); }
+.icon-button.action-trash:hover { color: var(--danger); }
 
 /* Trash rows keep visible text buttons — restore/delete must not hide.
    The title gets its own full-width line: on one line the two button labels
@@ -283,16 +378,17 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, summary:focus
   background: var(--elevated-bg);
 }
 .note-item.trash-row button:hover { background: var(--hover-bg); }
-.note-item.trash-row .trash-purge:hover { border-color: var(--coral-500); color: var(--coral-500); }
+.note-item.trash-row .trash-purge:hover { border-color: var(--danger); color: var(--danger); }
 
 #undo-banner[hidden] { display: none; }
-/* Overlay, not in-flow: an in-flow banner shifted the note rows under the
-   cursor exactly while the user reached for Undo, and stole list height. */
+/* Kept out of the list's flow: an in-flow banner shifted the note rows under
+   the cursor exactly while the user reached for Undo, and stole list height.
+   Mobile (scrolling panel): sticky pins it above the footer while scrolled.
+   Desktop (non-scrolling panel): absolute overlay — see the 768px block. */
 #undo-banner {
-  position: absolute;
-  left: 0.6rem;
-  right: 0.6rem;
+  position: sticky;
   bottom: 0.6rem;
+  margin: 0 0.6rem;
   z-index: 5;
   padding: 0.5rem 0.65rem;
   display: flex;
@@ -302,7 +398,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, summary:focus
   background: var(--elevated-bg);
   border: 1px solid var(--border);
   border-radius: var(--radius-control);
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+  box-shadow: var(--sheet-shadow);
 }
 #undo-banner button {
   border: 1px solid var(--border);
@@ -328,6 +424,9 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, summary:focus
 #backup-panel { margin-top: 0.25rem; }
 #backup-panel summary {
   cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
   padding: 0.4rem 0.5rem;
   border-radius: var(--radius-control);
   color: var(--text-secondary);
@@ -335,8 +434,10 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, summary:focus
   list-style: none;
 }
 #backup-panel summary::-webkit-details-marker { display: none; }
-#backup-panel summary::before { content: "▸ "; }
-#backup-panel[open] summary::before { content: "▾ "; }
+#backup-panel summary .summary-chevron {
+  transition: transform var(--motion-control) ease;
+}
+#backup-panel[open] summary .summary-chevron { transform: rotate(90deg); }
 #backup-panel summary:hover { background: var(--hover-bg); color: var(--text); }
 #backup-panel .backup-actions {
   display: flex;
@@ -372,29 +473,41 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, summary:focus
 .drive-status { font-size: 12px; color: var(--text-secondary); min-height: 1em; padding: 0.3rem 0.5rem 0; }
 #drive-section .backup-actions button[hidden] { display: none; }
 
-/* ---- Editor ------------------------------------------------------------- */
+/* ---- Editor: the sheet -----------------------------------------------------
+   The signature surface of Daylight Paper: the writing column is a sheet of
+   paper on the cream desk. Full-bleed on mobile; edged, raised and centered
+   from 768px up. The measure never exceeds ~68ch even as the pane widens. */
 
 #editor-panel {
-  grid-column: 2;
-  grid-row: 2;
+  flex: 1;
   min-width: 0;
   min-height: 0;
   display: flex;
   flex-direction: column;
+  background: var(--bg);
+}
+
+.editor-sheet {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  background: var(--elevated-bg);
 }
 
 .editor-header {
   display: flex;
-  align-items: baseline;
-  gap: 0.75rem;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.3rem 0.6rem;
   width: 100%;
-  max-width: 76ch;
-  margin: 0 auto;
-  padding: 0.85rem 1.25rem 0.5rem;
+  padding: 0.75rem var(--space-1) 0.4rem;
 }
 .editor-header .note-heading {
-  font-size: 21px;
-  font-weight: 600;
+  font-family: var(--font-writing);
+  font-size: 20px;
+  font-weight: 400;
   margin: 0;
   min-width: 0;
   flex: 1;
@@ -402,47 +515,27 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, summary:focus
   overflow: hidden;
   text-overflow: ellipsis;
 }
-#toggle-history {
-  flex: none;
-  font-size: 13px;
-  color: var(--text-secondary);
-  padding: 0.3rem 0.6rem;
-  border: 1px solid var(--border);
-}
-#toggle-history:hover { background: var(--hover-bg); color: var(--text); }
-#toggle-history[aria-pressed="true"] {
-  color: var(--cyan-500);
-  border-color: var(--cyan-500);
-}
 
-textarea#editor {
-  flex: 1;
-  min-height: 0;
-  width: 100%;
-  max-width: 76ch;
-  margin: 0 auto;
-  font-family: var(--font-editor);
-  font-size: 17px;
-  /* 1.65 where a default textarea sits near 1.2 — the single cheapest thing
-     separating "code editor" from "form field" (inherited from Quick Web
-     Notepad, where it carries the whole feel). */
-  line-height: 1.65;
-  background: transparent;
-  color: var(--text);
-  /* The box refuses to look like a box; the sage caret IS the focus ring. */
-  border: none;
-  resize: none;
-  caret-color: var(--sage-500);
-  padding: 0.5rem 1.25rem 1.25rem;
+/* Mobile back control — hidden at >=768px where the list is always visible. */
+#editor-back {
+  display: flex;
+  align-items: center;
+  gap: 0.2rem;
+  flex: none;
+  margin-left: -0.4rem;
+  padding: 0.35rem 0.55rem 0.35rem 0.3rem;
+  font-size: 13px;
+  color: var(--accent);
 }
-textarea#editor:focus-visible { outline: none; }
-textarea#editor::selection { background: rgba(120, 169, 141, 0.32); }
+#editor-back:hover { background: var(--hover-bg); }
 
 .editor-tools {
   display: flex;
   align-items: center;
   gap: 0.25rem;
-  flex: none;
+  /* Mobile: the tools take their own full row under back + title; a single
+     row of nine controls would overflow a 375px sheet. Reset at >=768px. */
+  flex: 1 0 100%;
 }
 .editor-tools button {
   font-size: 13px;
@@ -452,8 +545,31 @@ textarea#editor::selection { background: rgba(120, 169, 141, 0.32); }
   border: 1px solid transparent;
 }
 .editor-tools button:hover { background: var(--hover-bg); color: var(--text); }
-.editor-tools button[aria-pressed="true"] { color: var(--cyan-500); }
+.editor-tools button[aria-pressed="true"] { color: var(--accent); }
 .editor-tools #toggle-history { border: 1px solid var(--border); margin-left: 0.35rem; }
+.editor-tools #toggle-history[aria-pressed="true"] {
+  color: var(--accent);
+  border-color: currentColor;
+}
+
+textarea#editor {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  font-family: var(--font-writing);
+  font-size: 18px;
+  /* Reading rhythm, not form-field rhythm (redesign-plan §3). */
+  line-height: 1.7;
+  background: transparent;
+  color: var(--text);
+  /* The sheet is the box; the amber caret is the focus. */
+  border: none;
+  resize: none;
+  caret-color: var(--accent);
+  padding: 0.4rem var(--space-1) var(--space-2);
+}
+textarea#editor:focus-visible { outline: none; }
+textarea#editor::selection { background: var(--selection); }
 
 #find-bar[hidden] { display: none; }
 #find-bar {
@@ -462,15 +578,13 @@ textarea#editor::selection { background: rgba(120, 169, 141, 0.32); }
   gap: 0.35rem;
   flex-wrap: wrap;
   width: 100%;
-  max-width: 76ch;
-  margin: 0 auto;
-  padding: 0.35rem 1.25rem 0.5rem;
+  padding: 0.35rem var(--space-1) 0.5rem;
   font-size: 13px;
 }
 #find-bar input[type="text"] {
   font: inherit;
   color: var(--text);
-  background: var(--elevated-bg);
+  background: var(--bg);
   border: 1px solid var(--border);
   border-radius: var(--radius-control);
   padding: 0.3rem 0.5rem;
@@ -482,7 +596,7 @@ textarea#editor::selection { background: rgba(120, 169, 141, 0.32); }
 #find-bar button {
   padding: 0.3rem 0.5rem;
   border: 1px solid var(--border);
-  background: var(--elevated-bg);
+  background: var(--bg);
   color: var(--text-secondary);
 }
 #find-bar button:hover { background: var(--hover-bg); color: var(--text); }
@@ -495,7 +609,7 @@ textarea#editor::selection { background: rgba(120, 169, 141, 0.32); }
   cursor: pointer;
   user-select: none;
 }
-.find-flag input { accent-color: var(--sage-500); }
+.find-flag input { accent-color: var(--accent-surface); }
 
 /* The confirmation HUD (150ms in, 2s out, pointer-events none — it can
    confirm but never interrupt). */
@@ -504,7 +618,7 @@ textarea#editor::selection { background: rgba(120, 169, 141, 0.32); }
   top: 50%;
   left: 50%;
   transform: translate(-50%, -50%) scale(0.95);
-  background: rgba(120, 120, 120, 0.25);
+  background: rgba(28, 25, 23, 0.55);
   backdrop-filter: blur(10px);
   -webkit-backdrop-filter: blur(10px);
   border-radius: 22px;
@@ -525,8 +639,9 @@ textarea#editor::selection { background: rgba(120, 169, 141, 0.32); }
   border-radius: 50%;
   background: rgba(255, 255, 255, 0.14);
   color: #fff;
-  font-size: 52px;
-  line-height: 84px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 #hud .hud-label { color: #fff; font-size: 18px; font-weight: 700; }
 
@@ -539,58 +654,83 @@ textarea#editor::selection { background: rgba(120, 169, 141, 0.32); }
   justify-content: center;
   gap: 0.4rem;
   text-align: center;
-  padding: 2rem;
+  padding: var(--space-3);
 }
 .editor-empty svg { margin-bottom: 0.75rem; opacity: 0.9; }
-.editor-empty .brand-mark-stroke { stroke: var(--sage-500); }
-.editor-empty h2 { font-size: 24px; font-weight: 600; margin: 0; }
+.editor-empty h2 {
+  font-family: var(--font-writing);
+  font-size: 26px;
+  font-weight: 400;
+  margin: 0;
+}
 .editor-empty p { margin: 0; color: var(--text-secondary); max-width: 34ch; }
 .editor-empty button {
-  margin-top: 1rem;
+  margin-top: var(--space-1);
   padding: 0.5rem 1.1rem;
   font-weight: 600;
-  color: var(--ink-950);
-  background: var(--sage-500);
+  color: var(--on-accent);
+  background: var(--accent-surface);
 }
-.editor-empty button:hover { filter: brightness(1.07); }
+.editor-empty button:hover { filter: brightness(1.06); }
 
-/* ---- History panel ------------------------------------------------------ */
+/* ---- History panel ---------------------------------------------------------
+   Mobile: a full-height sheet over the editor, with its own close control
+   (the toggle underneath may be covered — redesign-plan §4). */
 
 #history-panel {
-  grid-column: 3;
-  grid-row: 2;
-  width: 300px;
-  min-height: 0;
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  top: max(3rem, 8dvh);
   overflow-y: auto;
   background: var(--panel-bg);
-  border-left: 1px solid var(--border);
-  padding: 0.75rem 1rem;
+  border-top: 1px solid var(--border);
+  border-radius: var(--radius-dialog) var(--radius-dialog) 0 0;
+  box-shadow: 0 -8px 32px rgba(28, 25, 23, 0.18);
+  padding: 0.75rem var(--space-1);
+  z-index: 10;
   transition: opacity var(--motion-panel) ease;
 }
 #history-panel[hidden] { display: none; }
-#history-panel h2 {
+.history-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin: 0.1rem 0 0.6rem;
+}
+.history-head h2 {
   font-size: 14px;
   font-weight: 600;
-  margin: 0.25rem 0 0.6rem;
+  margin: 0;
 }
+#history-close {
+  padding: 0.35rem 0.45rem;
+  line-height: 0;
+  color: var(--text-secondary);
+}
+#history-close:hover { background: var(--hover-bg); color: var(--text); }
+
 #version-list { list-style: none; margin: 0; padding: 0; }
 #version-list li { margin-bottom: 2px; }
-#version-list button {
+#version-list > li > button {
   width: 100%;
   text-align: left;
   padding: 0.4rem 0.55rem;
   font-size: 13px;
   color: var(--text-secondary);
 }
-#version-list button:hover { background: var(--hover-bg); color: var(--text); }
+#version-list > li > button:hover { background: var(--hover-bg); color: var(--text); }
 #version-list .version-empty { color: var(--text-secondary); font-size: 13px; padding: 0.4rem 0.55rem; }
-#version-list .version-when { display: block; }
+#version-list .version-when { display: block; font-variant-numeric: tabular-nums; }
 #version-list .version-snippet {
   display: block;
   margin-top: 1px;
-  font-size: 12px;
+  font-family: var(--font-writing);
+  font-size: 12.5px;
   color: var(--text);
-  opacity: 0.75;
+  opacity: 0.8;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -598,13 +738,13 @@ textarea#editor::selection { background: rgba(120, 169, 141, 0.32); }
 
 #version-preview { margin-top: 0.75rem; }
 #version-preview pre {
-  font-family: var(--font-editor);
-  font-size: 12px;
-  line-height: 1.5;
-  background: var(--bg);
+  font-family: var(--font-writing);
+  font-size: 13px;
+  line-height: 1.6;
+  background: var(--elevated-bg);
   border: 1px solid var(--border);
   border-radius: var(--radius-control);
-  padding: 0.6rem;
+  padding: 0.6rem 0.7rem;
   max-height: 40vh;
   overflow: auto;
   white-space: pre-wrap;
@@ -616,27 +756,30 @@ textarea#editor::selection { background: rgba(120, 169, 141, 0.32); }
   padding: 0.5rem 0.6rem;
   font-size: 13px;
   font-weight: 600;
-  color: var(--ink-950);
-  background: var(--sage-500);
+  color: var(--on-accent);
+  background: var(--accent-surface);
 }
-#version-preview .restore-version:hover { filter: brightness(1.07); }
+#version-preview .restore-version:hover { filter: brightness(1.06); }
 #version-preview .restore-version:disabled { opacity: 0.6; filter: none; cursor: default; }
 #version-preview .restore-caption {
   margin: 0.4rem 0 0;
   font-size: 12px;
   color: var(--text-secondary);
 }
-#history-notice { margin-top: 0.6rem; font-size: 13px; color: var(--coral-500); }
+#history-notice { margin-top: 0.6rem; font-size: 13px; color: var(--danger); }
 
-/* ---- Status bar --------------------------------------------------------- */
+/* ---- Status bar -------------------------------------------------------------
+   Two separate facts, always: what Heldnote stored, and what the browser
+   promises about keeping it. They never merge and never share a color
+   (redesign-plan §5). None of the functional colors is the brand accent. */
 
 #status-bar {
-  grid-column: 1 / -1;
-  grid-row: 3;
+  flex: none;
   display: flex;
   align-items: center;
-  gap: 1.25rem;
-  padding: 0.32rem 1rem;
+  flex-wrap: wrap;
+  gap: 0.4rem 1.25rem;
+  padding: 0.35rem var(--space-1);
   font-size: 12.5px;
   font-weight: 500;
   color: var(--text-secondary);
@@ -644,15 +787,15 @@ textarea#editor::selection { background: rgba(120, 169, 141, 0.32); }
   background: var(--panel-bg);
 }
 #status-counts { margin-left: auto; font-variant-numeric: tabular-nums; }
-#status-revision.state-saved { color: var(--sage-500); }
-#status-revision.state-failed { color: var(--coral-500); }
-#status-retention.state-warning { color: var(--amber-500); }
-#status-retention.state-info { color: var(--blue-500); }
-#status-notice.state-warning { color: var(--amber-500); }
+#status-revision.state-saved { color: var(--ok); }
+#status-revision.state-failed { color: var(--danger); }
+#status-retention.state-warning { color: var(--warn); }
+#status-retention.state-info { color: var(--info); }
+#status-notice.state-warning { color: var(--warn); }
 #status-notice[hidden] { display: none; }
 
-/* The held indicator: a small dot that settles sage when a revision is
-   stored. Calm, not celebratory — Quiet Assurance. */
+/* The held indicator: a small dot that settles when a revision is stored.
+   Calm, not celebratory. */
 #status-revision.state-saved::before {
   content: "●";
   margin-right: 0.35rem;
@@ -665,51 +808,87 @@ textarea#editor::selection { background: rgba(120, 169, 141, 0.32); }
   to { opacity: 1; }
 }
 
-/* ---- Responsive --------------------------------------------------------- */
+/* ---- >= 768px: list + editor side by side --------------------------------- */
 
-@media (max-width: 900px) {
-  #history-panel { width: 260px; }
-}
+@media (min-width: 768px) {
+  #app {
+    display: grid;
+    grid-template-columns: 264px minmax(0, 1fr);
+    grid-template-rows: auto 1fr auto;
+  }
+  #app-notices { grid-column: 1 / -1; grid-row: 1; }
 
-@media (max-width: 720px) {
-  #app { grid-template-columns: 1fr; grid-template-rows: auto auto 1fr auto; }
-  /* The panel itself scrolls on small screens. Without this, the fixed
-     sections (brand, actions, footer, Drive) can exceed the panel's
-     max-height: the note list's flex share computes to 0px height and the
-     overflowing footer paints over the editor — QA's two mobile blockers. */
+  /* Both panes are always visible; the mobile view switch is inert. */
+  #app:not([data-view="editor"]) #editor-panel { display: flex; }
+  #app[data-view="editor"] #notes-panel { display: flex; }
+
   #notes-panel {
     grid-column: 1;
     grid-row: 2;
-    max-height: 46vh;
-    overflow-y: auto;
-    border-right: none;
-    border-bottom: 1px solid var(--border);
+    border-right: 1px solid var(--border);
+    /* Footer stays pinned: the list scrolls internally, not the panel. */
+    overflow-y: hidden;
   }
-  #note-list { flex: none; min-height: 0; overflow-y: visible; }
-  /* New note + Search stay reachable while the panel scrolls — QA lost both
-     off the top of the 46vh sidebar. */
-  .sidebar-actions {
-    position: sticky;
-    top: 0;
-    z-index: 3;
-    background: var(--panel-bg);
-    padding-top: 0.5rem;
+  #note-list { flex: 1; overflow-y: auto; }
+  .sidebar-actions { position: static; }
+  #undo-banner {
+    position: absolute;
+    left: 0.6rem;
+    right: 0.6rem;
+    bottom: 0.6rem;
+    margin: 0;
   }
-  #editor-panel { grid-column: 1; grid-row: 3; }
-  /* History becomes a bottom sheet so the editor (and its History toggle,
-     the only way back) stays visible above it. */
+  #editor-panel {
+    grid-column: 2;
+    grid-row: 2;
+    padding: var(--space-2) var(--space-2) 0;
+    align-items: center;
+  }
+  #editor-back { display: none; }
+
+  /* The sheet: raised paper, capped at a ~68ch measure (18px serif). */
+  .editor-sheet {
+    max-width: 46rem;
+    border: 1px solid var(--border);
+    border-bottom: none;
+    border-radius: var(--radius-panel) var(--radius-panel) 0 0;
+    box-shadow: var(--sheet-shadow);
+  }
+  .editor-header { padding: var(--space-1) var(--space-2) 0.4rem; flex-wrap: nowrap; }
+  .editor-tools { flex: none; }
+  #find-bar { padding: 0.35rem var(--space-2) 0.5rem; }
+  textarea#editor { padding: 0.4rem var(--space-2) var(--space-3); }
+
+  /* History overlays the editor from the right (tablet). */
   #history-panel {
-    position: fixed;
-    left: 0;
-    right: 0;
+    left: auto;
+    top: 0;
     bottom: 0;
-    width: auto;
-    max-height: 55vh;
-    border-left: none;
-    border-top: 1px solid var(--border);
-    box-shadow: 0 -8px 24px rgba(0, 0, 0, 0.25);
-    z-index: 10;
+    width: min(340px, 42vw);
+    border-radius: 0;
+    border-top: none;
+    border-left: 1px solid var(--border);
+    box-shadow: -8px 0 32px rgba(28, 25, 23, 0.12);
   }
-  #status-bar { grid-row: 4; flex-wrap: wrap; gap: 0.5rem 1rem; }
-  textarea#editor { font-size: 16px; }
+
+  #status-bar { grid-column: 1 / -1; grid-row: 3; flex-wrap: nowrap; }
+}
+
+/* ---- >= 1024px: history becomes a real third column ------------------------ */
+
+@media (min-width: 1024px) {
+  #app { grid-template-columns: 280px minmax(0, 1fr) auto; }
+  #notes-panel { grid-column: 1; }
+  #editor-panel { grid-column: 2; }
+  #history-panel {
+    position: static;
+    grid-column: 3;
+    grid-row: 2;
+    width: 320px;
+    min-height: 0;
+    border-left: 1px solid var(--border);
+    box-shadow: none;
+    z-index: auto;
+  }
+  #history-close { display: none; }
 }

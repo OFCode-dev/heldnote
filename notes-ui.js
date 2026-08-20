@@ -2,6 +2,7 @@
 import * as store from './store.js';
 import * as driveSync from './drive-sync.js';
 import { t, getLanguage } from './i18n.js';
+import { ICONS } from './icons.js';
 
 // The product mark: the sage notepad-on-a-monitor from the favicon/app icon
 // (Quick Web Notepad's composition in the heldnote palette). One drawing
@@ -36,7 +37,7 @@ export function renderNotesPanel(container, { onSelect, onImportComplete, onNote
       ${BRAND_MARK}
       <span class="wordmark">heldnote</span>
       <span class="brand-spacer"></span>
-      <button id="theme-toggle" aria-label="${t('theme.toggle')}" title="${t('theme.toggle')}">◐</button>
+      <button id="theme-toggle" aria-label="${t('theme.toggle')}" title="${t('theme.toggle')}">${ICONS.theme}</button>
     </header>
     <div class="sidebar-actions">
       <button id="new-note">${t('notes.new')}</button>
@@ -47,7 +48,7 @@ export function renderNotesPanel(container, { onSelect, onImportComplete, onNote
     <div class="sidebar-footer">
       <button id="toggle-trash"></button>
       <details id="backup-panel">
-        <summary>${t('backup.title')}</summary>
+        <summary><span class="summary-chevron">${ICONS.chevronRight}</span>${t('backup.title')}</summary>
         <div class="backup-actions">
           <button id="export-backup">${t('backup.export')}</button>
           <button id="import-copy">${t('backup.importCopy')}</button>
@@ -95,10 +96,28 @@ export function renderNotesPanel(container, { onSelect, onImportComplete, onNote
     refresh();
   });
 
-  function emptyRow(message) {
+  // Empty states carry an action, not just a message (redesign-plan §6).
+  // `query` echoes the search text back (textContent — never markup) so
+  // "no results" names what produced it; `action` is a way out.
+  function emptyRow(message, { query, action } = {}) {
     const li = document.createElement('li');
     li.className = 'list-empty';
-    li.textContent = message;
+    const text = document.createElement('span');
+    text.textContent = message;
+    li.appendChild(text);
+    if (query) {
+      const q = document.createElement('span');
+      q.className = 'empty-query';
+      q.textContent = `“${query}”`;
+      li.appendChild(q);
+    }
+    if (action) {
+      const button = document.createElement('button');
+      button.className = 'empty-action';
+      button.textContent = action.label;
+      button.addEventListener('click', action.run);
+      li.appendChild(button);
+    }
     return li;
   }
 
@@ -132,8 +151,9 @@ export function renderNotesPanel(container, { onSelect, onImportComplete, onNote
 
     const pinButton = document.createElement('button');
     pinButton.className = 'icon-button action-pin';
-    pinButton.textContent = note.pinned ? '★' : '☆';
+    pinButton.innerHTML = note.pinned ? ICONS.pinFilled : ICONS.pin;
     pinButton.setAttribute('aria-label', note.pinned ? t('notes.unpin') : t('notes.pin'));
+    pinButton.setAttribute('aria-pressed', String(!!note.pinned));
     pinButton.title = note.pinned ? t('notes.unpin') : t('notes.pin');
     pinButton.addEventListener('click', async () => {
       await store.setPinned(note.id, !note.pinned);
@@ -142,7 +162,7 @@ export function renderNotesPanel(container, { onSelect, onImportComplete, onNote
 
     const trashButton = document.createElement('button');
     trashButton.className = 'icon-button action-trash';
-    trashButton.textContent = '🗑';
+    trashButton.innerHTML = ICONS.trash;
     trashButton.setAttribute('aria-label', t('trash.move'));
     trashButton.title = t('trash.move');
     trashButton.addEventListener('click', async () => {
@@ -203,7 +223,12 @@ export function renderNotesPanel(container, { onSelect, onImportComplete, onNote
 
     if (viewingTrash) {
       if (visible.length === 0) {
-        list.appendChild(emptyRow(t('trash.empty')));
+        list.appendChild(emptyRow(t('trash.empty'), {
+          action: {
+            label: t('trash.backToNotes'),
+            run: () => { viewingTrash = false; updateToggleLabel(); refresh(); },
+          },
+        }));
         return;
       }
       for (const note of visible) list.appendChild(trashRow(note));
@@ -211,7 +236,24 @@ export function renderNotesPanel(container, { onSelect, onImportComplete, onNote
     }
 
     if (visible.length === 0) {
-      list.appendChild(emptyRow(query ? t('notes.noResults') : t('notes.empty')));
+      if (query) {
+        list.appendChild(emptyRow(t('notes.noResults'), {
+          query,
+          action: {
+            label: t('notes.clearSearch'),
+            run: () => { searchInput.value = ''; refresh(); searchInput.focus(); },
+          },
+        }));
+      } else {
+        list.appendChild(emptyRow(t('notes.empty'), {
+          action: {
+            label: t('empty.cta'),
+            // The New note button owns the careful create flow (focus, early
+            // typing capture); reuse it instead of a second code path.
+            run: () => container.querySelector('#new-note').click(),
+          },
+        }));
+      }
       return;
     }
 

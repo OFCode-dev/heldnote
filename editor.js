@@ -1,6 +1,7 @@
 // editor.js
 import * as store from './store.js';
 import { t } from './i18n.js';
+import { ICONS } from './icons.js';
 
 // Mirrors store.js's deriveTitle() for change-detection only: this value is
 // never displayed as the canonical title in the note list (that always renders
@@ -26,7 +27,7 @@ function showHud(label) {
   if (!hud) {
     hud = document.createElement('div');
     hud.id = 'hud';
-    hud.innerHTML = '<div class="hud-mark">✓</div><div class="hud-label"></div>';
+    hud.innerHTML = `<div class="hud-mark">${ICONS.check}</div><div class="hud-label"></div>`;
     document.body.appendChild(hud);
   }
   hud.querySelector('.hud-label').textContent = label;
@@ -43,7 +44,9 @@ function showHud(label) {
 
 const ZOOM_KEY = 'heldnote-zoom';
 const WRAP_KEY = 'heldnote-wrap';
-const BASE_FONT_PX = 17;
+// 18px Source Serif 4 at line-height 1.7 — the reading rhythm from
+// redesign-plan §3 (serif faces set slightly larger than the old monospace).
+const BASE_FONT_PX = 18;
 
 function loadZoom() {
   try {
@@ -60,33 +63,36 @@ function escapeRegExp(text) {
   return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-export function renderEditor(container, noteId, { onRevChange, onTitleChange, onError, onToggleHistory, historyOpen = false } = {}) {
+export function renderEditor(container, noteId, { onRevChange, onTitleChange, onError, onToggleHistory, onBack, historyOpen = false } = {}) {
   container.innerHTML = `
-    <div class="editor-header">
-      <h1 class="note-heading"></h1>
-      <div class="editor-tools" role="toolbar" aria-label="${t('editor.toolsLabel')}">
-        <button id="tool-copy" title="${t('editor.copy')}"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg></button>
-        <button id="tool-download" title="${t('editor.download')}"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 3v12m0 0-5-5m5 5 5-5M4 21h16"/></svg></button>
-        <button id="tool-find" title="${t('find.open')} (Ctrl+F)"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m20 20-4.8-4.8"/></svg></button>
-        <button id="tool-wrap" title="${t('editor.wrap')}" aria-pressed="true">⏎</button>
-        <button id="tool-zoom-out" title="A−">A−</button>
-        <button id="tool-zoom-in" title="A+">A+</button>
-        <button id="toggle-history" aria-pressed="${historyOpen}">${t('editor.history')}</button>
+    <div class="editor-sheet">
+      <div class="editor-header">
+        <button id="editor-back" aria-label="${t('nav.backToNotes')}">${ICONS.chevronLeft}<span>${t('nav.backToNotes')}</span></button>
+        <h1 class="note-heading"></h1>
+        <div class="editor-tools" role="toolbar" aria-label="${t('editor.toolsLabel')}">
+          <button id="tool-copy" title="${t('editor.copy')}" aria-label="${t('editor.copy')}"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg></button>
+          <button id="tool-download" title="${t('editor.download')}" aria-label="${t('editor.download')}"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12m0 0-5-5m5 5 5-5M4 21h16"/></svg></button>
+          <button id="tool-find" title="${t('find.open')} (Ctrl+F)" aria-label="${t('find.open')}"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m20 20-4.8-4.8"/></svg></button>
+          <button id="tool-wrap" title="${t('editor.wrap')}" aria-label="${t('editor.wrap')}" aria-pressed="true">${ICONS.wrap}</button>
+          <button id="tool-zoom-out" title="A−">A−</button>
+          <button id="tool-zoom-in" title="A+">A+</button>
+          <button id="toggle-history" aria-pressed="${historyOpen}" aria-expanded="${historyOpen}">${t('editor.history')}</button>
+        </div>
       </div>
+      <div id="find-bar" hidden>
+        <input id="find-input" type="text" placeholder="${t('find.placeholder')}" aria-label="${t('find.placeholder')}">
+        <span id="find-count" aria-live="polite"></span>
+        <button id="find-prev" title="${t('find.prev')}" aria-label="${t('find.prev')}">${ICONS.chevronUp}</button>
+        <button id="find-next" title="${t('find.next')}" aria-label="${t('find.next')}">${ICONS.chevronDown}</button>
+        <label class="find-flag"><input id="find-case" type="checkbox">Aa</label>
+        <label class="find-flag"><input id="find-regex" type="checkbox">.*</label>
+        <input id="replace-input" type="text" placeholder="${t('find.replacePlaceholder')}" aria-label="${t('find.replacePlaceholder')}">
+        <button id="replace-one">${t('find.replace')}</button>
+        <button id="replace-all">${t('find.replaceAll')}</button>
+        <button id="find-close" title="Esc" aria-label="Esc">${ICONS.close}</button>
+      </div>
+      <textarea id="editor" aria-label="Note text" spellcheck="false"></textarea>
     </div>
-    <div id="find-bar" hidden>
-      <input id="find-input" type="text" placeholder="${t('find.placeholder')}" aria-label="${t('find.placeholder')}">
-      <span id="find-count" aria-live="polite"></span>
-      <button id="find-prev" title="${t('find.prev')}">↑</button>
-      <button id="find-next" title="${t('find.next')}">↓</button>
-      <label class="find-flag"><input id="find-case" type="checkbox">Aa</label>
-      <label class="find-flag"><input id="find-regex" type="checkbox">.*</label>
-      <input id="replace-input" type="text" placeholder="${t('find.replacePlaceholder')}" aria-label="${t('find.replacePlaceholder')}">
-      <button id="replace-one">${t('find.replace')}</button>
-      <button id="replace-all">${t('find.replaceAll')}</button>
-      <button id="find-close" title="Esc">×</button>
-    </div>
-    <textarea id="editor" aria-label="Note text" spellcheck="false"></textarea>
   `;
   const textarea = container.querySelector('#editor');
   const heading = container.querySelector('.note-heading');
@@ -125,6 +131,13 @@ export function renderEditor(container, noteId, { onRevChange, onTitleChange, on
     if (!onToggleHistory) return;
     const nowOpen = onToggleHistory();
     historyButton.setAttribute('aria-pressed', String(!!nowOpen));
+    historyButton.setAttribute('aria-expanded', String(!!nowOpen));
+  });
+
+  // Mobile single-pane shell: the back control returns to the notes list.
+  // CSS hides it from 768px up, where the list is always on screen.
+  container.querySelector('#editor-back').addEventListener('click', () => {
+    if (onBack) onBack();
   });
 
   let idleTimer = null;
@@ -402,6 +415,7 @@ export function renderEditor(container, noteId, { onRevChange, onTitleChange, on
     },
     setHistoryOpen(open) {
       historyButton.setAttribute('aria-pressed', String(!!open));
+      historyButton.setAttribute('aria-expanded', String(!!open));
     },
   };
 }

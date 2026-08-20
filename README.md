@@ -60,10 +60,10 @@ section is the place that status should actually be found.
 
 ## Not yet built
 
-The editor (`editor.js`) is currently a plain textarea. Find/replace, syntax
-highlighting with line numbers, a dark-theme toggle, and zoom are not
-implemented — none of these are v1 scope commitments, and this README will
-be updated if and when they are picked up.
+The editor is a plain textarea by design, with find & replace, word wrap,
+zoom, a light/dark theme toggle, copy, and .txt download built around it.
+Syntax highlighting with line numbers is deliberately not implemented, and
+is not a scope commitment.
 
 ## Deployment
 

@@ -162,6 +162,53 @@ async function boot() {
   // keeps whichever state the user last chose.
   let historyOpen = false;
 
+  // --- Mobile single-pane view state (redesign-plan §4) -------------------
+  // Below 768px only one pane shows at a time: the list is the root view and
+  // opening a note pushes the editor over it. CSS reads #app[data-view];
+  // from 768px up both panes are always visible and this state is inert.
+  const appEl = document.getElementById('app');
+  const mobileLayout = window.matchMedia('(max-width: 767px)');
+  appEl.dataset.view = 'list';
+
+  function setView(view) {
+    appEl.dataset.view = view;
+  }
+
+  // Opening a note on a phone gets a real history entry, so the device back
+  // gesture returns to the list instead of leaving the app. Only one entry
+  // is ever pushed: while in the editor the list is off screen, so a second
+  // push can't happen before popstate or the back control pops this one.
+  function enterEditorView() {
+    if (
+      mobileLayout.matches
+      && appEl.dataset.view !== 'editor'
+      && !(history.state && history.state.heldnoteView === 'editor')
+    ) {
+      try { history.pushState({ heldnoteView: 'editor' }, ''); } catch (e) { /* history may be sandboxed */ }
+    }
+    setView('editor');
+  }
+
+  function leaveEditorView() {
+    if (history.state && history.state.heldnoteView === 'editor') {
+      history.back(); // the popstate handler below performs the switch
+    } else {
+      setView('list');
+    }
+  }
+
+  window.addEventListener('popstate', (event) => {
+    const toEditor = event.state && event.state.heldnoteView === 'editor';
+    setView(toEditor ? 'editor' : 'list');
+    // The history sheet floats above both views; leaving the editor while
+    // it is open would strand it over the list.
+    if (!toEditor && historyOpen) {
+      historyOpen = false;
+      renderHistoryForCurrent();
+      if (activeEditor) activeEditor.setHistoryOpen(false);
+    }
+  });
+
   function toggleTheme() {
     const root = document.documentElement;
     const systemPrefersLight = window.matchMedia('(prefers-color-scheme: light)').matches;
@@ -192,6 +239,13 @@ async function boot() {
     // editor out from under them and silently swap in A's.
     renderHistoryPanel(panel, id, {
       onRestore: () => { if (id === currentNoteId) openEditor(id); },
+      // On small screens the sheet covers the toggle that opened it, so the
+      // panel carries its own close control.
+      onClose: () => {
+        historyOpen = false;
+        renderHistoryForCurrent();
+        if (activeEditor) activeEditor.setHistoryOpen(false);
+      },
     });
   }
 
@@ -209,6 +263,7 @@ async function boot() {
         renderHistoryForCurrent();
         return historyOpen;
       },
+      onBack: leaveEditorView,
     });
     renderHistoryForCurrent();
   }
@@ -237,11 +292,17 @@ async function boot() {
     renderEmptyState();
     document.getElementById('history-panel').hidden = true;
     if (notesPanelHandle) notesPanelHandle.setActive(null);
+    // The note this view was showing is gone; on a phone that means back to
+    // the list, not an empty sheet.
+    setView('list');
   }
 
-  function selectNote(id) {
+  // switchView: false keeps the current pane on phones — used when a note is
+  // (re)opened as a side effect (boot, import reload) rather than by a tap.
+  function selectNote(id, { switchView = true } = {}) {
     openEditor(id);
     if (notesPanelHandle) notesPanelHandle.setActive(id);
+    if (switchView) enterEditorView();
   }
 
   // Called after any import completes. 'replace' wipes the database
@@ -253,7 +314,9 @@ async function boot() {
     const id = currentNoteId;
     try {
       await store.getNote(id);
-      selectNote(id);
+      // Reload in place: imports run from the sidebar, so on a phone the
+      // user is on the list — do not yank them into the editor.
+      selectNote(id, { switchView: false });
     } catch (error) {
       closeEditor();
     }
@@ -281,8 +344,10 @@ async function boot() {
     if (existing.length > 0) {
       // "Return anytime" means returning to where you left off: open the
       // most recently edited note, not whichever pinned note sorts first.
+      // switchView false: on a phone the list is the root view — the note
+      // is loaded and one tap away, not pushed over the list unasked.
       const mostRecent = existing.reduce((best, note) => (note.updatedAt > best.updatedAt ? note : best));
-      selectNote(mostRecent.id);
+      selectNote(mostRecent.id, { switchView: false });
     } else {
       renderEmptyState();
     }
