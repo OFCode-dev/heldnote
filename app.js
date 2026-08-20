@@ -170,7 +170,7 @@ async function boot() {
   appEl.dataset.view = 'list';
 
   // --- Browser tab title (docs/filename-plan.md §1.5) ---------------------
-  // "{name} — Heldnote" while a note is on screen; the index.html baseline
+  // "{name} | Heldnote" while a note is on screen; the index.html baseline
   // otherwise. On a phone the list view counts as "no note on screen" even
   // though a note is loaded behind it.
   const DEFAULT_DOC_TITLE = document.title;
@@ -179,7 +179,7 @@ async function boot() {
   function applyDocTitle() {
     const onList = mobileLayout.matches && appEl.dataset.view !== 'editor';
     document.title = currentNoteTitle && !onList
-      ? `${currentNoteTitle} — Heldnote`
+      ? `${currentNoteTitle} | Heldnote`
       : DEFAULT_DOC_TITLE;
   }
 
