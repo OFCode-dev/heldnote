@@ -4,13 +4,19 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Heldnote — local-first notes with version history</title>
-  <meta name="description" content="Write freely. Return anytime. Local-first notes with version history.">
+  <meta name="description" content="A local-first browser notepad that keeps every version of every note. No account, no server — notes stay in your own browser storage.">
+  <link rel="canonical" href="https://heldnote.app/">
   <script>
-    // Apply the stored theme before first paint to avoid a flash.
+    // Apply the stored theme and writing face before first paint to avoid a
+    // flash. editor.js owns the font preference; this only mirrors it early,
+    // so a monospace note does not paint in serif and then reflow.
     try {
       const theme = localStorage.getItem('heldnote-theme');
       if (theme === 'dark' || theme === 'light') {
         document.documentElement.dataset.theme = theme;
+      }
+      if (localStorage.getItem('heldnote-editor-font') === 'mono') {
+        document.documentElement.dataset.editorFont = 'mono';
       }
     } catch (e) { /* storage may be blocked; system preference applies */ }
   </script>
@@ -23,12 +29,79 @@
   <meta name="theme-color" content="#FFFBEB" media="(prefers-color-scheme: light)">
   <meta name="theme-color" content="#1C1917" media="(prefers-color-scheme: dark)">
   <meta name="theme-color" content="#FFFBEB">
-  <meta property="og:title" content="Heldnote">
-  <meta property="og:description" content="Write freely. Return anytime. Local-first notes with version history.">
-  <meta property="og:url" content="https://heldnote.app">
+  <meta property="og:title" content="Heldnote — local-first notes with version history">
+  <meta property="og:description" content="A local-first browser notepad that keeps every version of every note. No account, no server — notes stay in your own browser storage.">
+  <meta property="og:url" content="https://heldnote.app/">
   <meta property="og:image" content="https://heldnote.app/icon-512.png">
+  <meta property="og:image:alt" content="The Heldnote mark: a small monitor showing three lines of text and a caret.">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="Heldnote">
+  <meta property="og:locale" content="en">
+  <meta property="og:locale:alternate" content="tr">
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="Heldnote — local-first notes with version history">
+  <meta name="twitter:description" content="A local-first browser notepad that keeps every version of every note. No account, no server — notes stay in your own browser storage.">
+  <meta name="twitter:image" content="https://heldnote.app/icon-512.png">
+
+  <!-- Structured data. Two jobs: let a search engine render a rich result, and
+       give an answer engine something exact to quote when someone asks for "a
+       notepad that keeps old versions without an account". Every claim here is
+       one the app actually keeps — featureList is not a wishlist, and the
+       author block exists because the person behind the tool was hard to find.
+       Deliberately absent: any offline-capability claim. There is no service
+       worker yet, so the app is not guaranteed to open without a network. -->
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "WebApplication",
+    "name": "Heldnote",
+    "url": "https://heldnote.app/",
+    "description": "A local-first browser notepad that keeps every version of every note. Notes are stored in the browser's own IndexedDB storage, with no account, no server and no third-party dependencies. Version history lets any earlier state of a note be restored, and backups go to a file or the user's own Google Drive.",
+    "applicationCategory": "ProductivityApplication",
+    "applicationSubCategory": "Note-taking",
+    "operatingSystem": "Any (modern web browser)",
+    "browserRequirements": "Requires JavaScript and IndexedDB.",
+    "isAccessibleForFree": true,
+    "inLanguage": ["en", "tr"],
+    "offers": {
+      "@type": "Offer",
+      "price": "0",
+      "priceCurrency": "USD"
+    },
+    "featureList": [
+      "Local-first storage — notes stay in the browser, never sent to a server",
+      "Version history for every note, with restore",
+      "No account and no sign-up",
+      "Serif or monospace writing font, for prose or for ASCII diagrams and tables",
+      "Full-text search across notes, plus find and replace",
+      "Trash with undo",
+      "Export and import a JSON backup, or back up to your own Google Drive",
+      "Light and dark theme",
+      "Dependency-free: no build step, no framework, no analytics"
+    ],
+    "softwareHelp": "https://heldnote.app/about",
+    "sameAs": "https://github.com/OFCode-dev/heldnote",
+    "author": {
+      "@type": "Person",
+      "name": "Ömer Faruk Bayrak",
+      "sameAs": "https://github.com/OFCode-dev"
+    }
+  }
+  </script>
 </head>
 <body>
+  <!-- The app shell below is empty until app.js runs, so this document has no
+       prose of its own. That is a real gap for anything that reads the page
+       without executing scripts — a crawler, an answer engine, a text browser,
+       or a visitor with JS disabled, who would otherwise see a blank cream
+       page and no explanation. /about carries the full description. -->
+  <noscript>
+    <div id="noscript-note">
+      <h1>Heldnote — local-first notes with version history</h1>
+      <p>Heldnote is a browser notepad that keeps every version of every note. Notes are stored in your own browser, with no account and no server. It needs JavaScript to run, because the notes live in the browser's IndexedDB storage rather than on a server.</p>
+      <p><a href="/about">Read what Heldnote does</a> · <a href="https://github.com/OFCode-dev/heldnote">Source on GitHub</a></p>
+    </div>
+  </noscript>
   <div id="app">
     <div id="app-notices" aria-live="polite"></div>
     <aside id="notes-panel"></aside>

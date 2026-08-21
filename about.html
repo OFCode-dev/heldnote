@@ -4,16 +4,77 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Heldnote — local-first notes with version history</title>
-  <meta name="description" content="Write freely. Return anytime. A local-first notepad that keeps every version of every note — no account, no server.">
+  <meta name="description" content="What Heldnote is: a free, local-first browser notepad that keeps every version of every note in your own browser storage — no account, no server, no dependencies.">
+  <link rel="canonical" href="https://heldnote.app/about">
   <link rel="preload" href="fonts/source-serif-4-latin.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="icon" type="image/png" sizes="32x32" href="icon-32.png">
   <meta name="theme-color" content="#FFFBEB" media="(prefers-color-scheme: light)">
   <meta name="theme-color" content="#1C1917" media="(prefers-color-scheme: dark)">
   <meta name="theme-color" content="#FFFBEB">
-  <meta property="og:title" content="Heldnote">
-  <meta property="og:description" content="Write freely. Return anytime. Local-first notes with version history.">
+  <meta property="og:title" content="What Heldnote is — local-first notes with version history">
+  <meta property="og:description" content="A free, local-first browser notepad that keeps every version of every note in your own browser storage — no account, no server, no dependencies.">
   <meta property="og:url" content="https://heldnote.app/about">
   <meta property="og:image" content="https://heldnote.app/icon-512.png">
+  <meta property="og:image:alt" content="The Heldnote mark: a small monitor showing three lines of text and a caret.">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="Heldnote">
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="What Heldnote is — local-first notes with version history">
+  <meta name="twitter:description" content="A free, local-first browser notepad that keeps every version of every note in your own browser storage — no account, no server, no dependencies.">
+  <meta name="twitter:image" content="https://heldnote.app/icon-512.png">
+
+  <!-- FAQPage markup, paired one-to-one with the visible questions further
+       down this page. Both search engines and answer engines require that: an
+       answer that exists only in the markup is a cloaked answer. Keep the two
+       in step — if a question changes below, change it here too. -->
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "FAQPage",
+    "mainEntity": [
+      {
+        "@type": "Question",
+        "name": "Do I need an account to use Heldnote?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "No. There is no sign-up, no email and no login. Heldnote has no user accounts because it has no server to hold them — open the page and start writing."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Where are my notes stored?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "In your own browser, in its IndexedDB storage, on the device you are using. Nothing is uploaded. Because that storage belongs to one browser on one device, notes do not appear in another browser unless you move them there with a backup file or a Google Drive backup you control."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "What does version history keep?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Heldnote checkpoints a note as you write and keeps those earlier versions alongside the current text. Any version can be previewed and restored without discarding what you have now. Older versions are trimmed when browser storage runs low, and the status bar says when that happens rather than hiding it."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Can I write ASCII diagrams and tables in Heldnote?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Yes. The writing surface uses a serif face by default for reading prose, and the editor toolbar has a monospace toggle for notes where column alignment matters — ASCII and Unicode box-drawing diagrams, tables, code and log excerpts. The setting is remembered across sessions."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Is Heldnote free and open source?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Yes, free with no paid tier, and the source is public on GitHub at github.com/OFCode-dev/heldnote. It ships as plain HTML, CSS and JavaScript modules with no framework, no build step, no analytics and no third-party requests at runtime."
+        }
+      }
+    ]
+  }
+  </script>
   <style>
     /* Daylight Paper tokens — mirrors styles.css (docs/redesign-plan.md §2).
        Self-contained on purpose: the landing page must not pull app CSS. */
@@ -131,6 +192,28 @@
       font-size: 0.92rem;
       color: var(--text-secondary);
     }
+    /* The FAQ carries the plain-language phrasings people actually search and
+       ask ("do I need an account", "where are my notes stored"). Rendered as
+       open <details> — collapsed answers are still indexable, but an answer
+       nobody has to click for is the one an assistant quotes accurately. */
+    .faq { margin: 3.5rem 0 0; text-align: left; }
+    .faq > h2 {
+      font-family: var(--serif);
+      font-weight: 400;
+      font-size: 1.35rem;
+      margin: 0 0 1rem;
+    }
+    .faq dt {
+      font-family: var(--serif);
+      font-size: 1.05rem;
+      margin: 1.4rem 0 0.3rem;
+    }
+    .faq dd {
+      margin: 0;
+      font-size: 0.92rem;
+      color: var(--text-secondary);
+    }
+    .faq a { color: var(--accent); }
     footer {
       border-top: 1px solid var(--border);
       padding: 1.1rem 1.5rem;
@@ -171,9 +254,9 @@
       </svg>
     </div>
     <h1>Write freely. Return anytime.</h1>
-    <p class="lede">Heldnote is a notepad that keeps every version of every note — in your browser, on your device. No account, no server, no setup.</p>
+    <p class="lede">Heldnote is a local-first notepad that keeps every version of every note — in your browser, on your device. No account, no server, no setup.</p>
     <p><a class="cta" href="/">Open Heldnote</a></p>
-    <p class="cta-caption">Free · works offline · nothing to install</p>
+    <p class="cta-caption">Free · no account · nothing to install</p>
     <ul class="benefits">
       <li>
         <h2>Every version, held</h2>
@@ -187,7 +270,31 @@
         <h2>Honest about storage</h2>
         <p>The status bar states two facts separately: what Heldnote has stored, and what your browser promises about keeping it. They are never blended into one reassuring green light.</p>
       </li>
+      <li>
+        <h2>Prose or diagrams</h2>
+        <p>The writing sheet is serif, for reading. One toggle in the toolbar switches it to monospace, for the notes where columns have to line up — ASCII and box-drawing diagrams, tables, code, log excerpts.</p>
+      </li>
     </ul>
+
+    <section class="faq">
+      <h2>Questions</h2>
+      <dl>
+        <dt>Do I need an account to use Heldnote?</dt>
+        <dd>No. There is no sign-up, no email and no login. Heldnote has no user accounts because it has no server to hold them — open the page and start writing.</dd>
+
+        <dt>Where are my notes stored?</dt>
+        <dd>In your own browser, in its IndexedDB storage, on the device you are using. Nothing is uploaded. Because that storage belongs to one browser on one device, notes do not appear in another browser unless you move them there with a backup file or a Google Drive backup you control.</dd>
+
+        <dt>What does version history keep?</dt>
+        <dd>Heldnote checkpoints a note as you write and keeps those earlier versions alongside the current text. Any version can be previewed and restored without discarding what you have now. Older versions are trimmed when browser storage runs low, and the status bar says when that happens rather than hiding it.</dd>
+
+        <dt>Can I write ASCII diagrams and tables in Heldnote?</dt>
+        <dd>Yes. The writing surface uses a serif face by default for reading prose, and the editor toolbar has a monospace toggle for notes where column alignment matters — ASCII and Unicode box-drawing diagrams, tables, code and log excerpts. The setting is remembered across sessions.</dd>
+
+        <dt>Is Heldnote free and open source?</dt>
+        <dd>Yes, free with no paid tier, and the source is public on <a href="https://github.com/OFCode-dev/heldnote">GitHub</a>. It ships as plain HTML, CSS and JavaScript modules with no framework, no build step, no analytics and no third-party requests at runtime.</dd>
+      </dl>
+    </section>
   </main>
   <footer>
     <a href="https://github.com/OFCode-dev/heldnote">Open source on GitHub</a> · heldnote.app

@@ -34,9 +34,15 @@ function showHud(label) {
 
 const ZOOM_KEY = 'heldnote-zoom';
 const WRAP_KEY = 'heldnote-wrap';
+const FONT_KEY = 'heldnote-editor-font';
 // 18px Source Serif 4 at line-height 1.7 — the reading rhythm from
 // redesign-plan §3 (serif faces set slightly larger than the old monospace).
 const BASE_FONT_PX = 18;
+// The monospace mode sets two px smaller on purpose: fixed-width faces carry a
+// larger apparent size at equal px, so 16 here matches the serif's weight on
+// the page. Must stay in step with the :root[data-editor-font="mono"] rule in
+// styles.css, which owns the family and line-height for the same mode.
+const MONO_FONT_PX = 16;
 
 function loadZoom() {
   try {
@@ -47,6 +53,12 @@ function loadZoom() {
 
 function loadWrap() {
   try { return localStorage.getItem(WRAP_KEY) !== 'off'; } catch (e) { return true; }
+}
+
+// Serif is the default writing face and stays the default: monospace is the
+// opt-in for notes where column alignment carries meaning.
+function loadMono() {
+  try { return localStorage.getItem(FONT_KEY) === 'mono'; } catch (e) { return false; }
 }
 
 function escapeRegExp(text) {
@@ -64,6 +76,7 @@ export function renderEditor(container, noteId, { onRevChange, onTitleChange, on
           <button id="tool-download" title="${t('editor.download')}" aria-label="${t('editor.download')}"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12m0 0-5-5m5 5 5-5M4 21h16"/></svg></button>
           <button id="tool-find" title="${t('find.open')} (Ctrl+F)" aria-label="${t('find.open')}"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m20 20-4.8-4.8"/></svg></button>
           <button id="tool-wrap" title="${t('editor.wrap')}" aria-label="${t('editor.wrap')}" aria-pressed="true">${ICONS.wrap}</button>
+          <button id="tool-font" title="${t('editor.font')}" aria-label="${t('editor.font')}" aria-pressed="false">${ICONS.mono}</button>
           <button id="tool-zoom-out" title="A−">A−</button>
           <button id="tool-zoom-in" title="A+">A+</button>
           <button id="toggle-history" aria-pressed="${historyOpen}" aria-expanded="${historyOpen}">${t('editor.history')}</button>
@@ -97,9 +110,13 @@ export function renderEditor(container, noteId, { onRevChange, onTitleChange, on
 
   let zoom = loadZoom();
   let wrapOn = loadWrap();
+  let monoOn = loadMono();
 
   function applyZoom() {
-    textarea.style.fontSize = `${Math.round(BASE_FONT_PX * zoom / 100)}px`;
+    // The zoom percentage is face-relative, so switching face keeps the
+    // reader's chosen zoom rather than resetting it.
+    const base = monoOn ? MONO_FONT_PX : BASE_FONT_PX;
+    textarea.style.fontSize = `${Math.round(base * zoom / 100)}px`;
     renderPosition();
   }
   function applyWrap() {
@@ -107,8 +124,17 @@ export function renderEditor(container, noteId, { onRevChange, onTitleChange, on
     textarea.style.overflowX = wrapOn ? 'hidden' : 'auto';
     container.querySelector('#tool-wrap').setAttribute('aria-pressed', String(wrapOn));
   }
-  applyZoom();
+  // The attribute lives on the root, not the panel: the preference is global
+  // and styles.css scopes the mono rule from :root. Setting it here (rather
+  // than only in the click handler) is what makes the choice survive a reload
+  // and a re-render of the editor panel.
+  function applyFont() {
+    document.documentElement.dataset.editorFont = monoOn ? 'mono' : 'serif';
+    container.querySelector('#tool-font').setAttribute('aria-pressed', String(monoOn));
+    applyZoom();
+  }
   applyWrap();
+  applyFont(); // calls applyZoom, so the face is settled before the first paint
 
   // Focus synchronously, before the note text loads. QA proved that any
   // async gap here turns immediate typing into disaster: with focus still
@@ -313,6 +339,12 @@ export function renderEditor(container, noteId, { onRevChange, onTitleChange, on
     wrapOn = !wrapOn;
     try { localStorage.setItem(WRAP_KEY, wrapOn ? 'on' : 'off'); } catch (e) { /* cosmetic */ }
     applyWrap();
+  });
+
+  container.querySelector('#tool-font').addEventListener('click', () => {
+    monoOn = !monoOn;
+    try { localStorage.setItem(FONT_KEY, monoOn ? 'mono' : 'serif'); } catch (e) { /* cosmetic */ }
+    applyFont();
   });
 
   function setZoom(next) {

@@ -24,6 +24,21 @@
   unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
 }
 
+/* The no-JavaScript fallback (index.html). Styled from literals, not tokens:
+   it sits above #app in the document and must stay legible even if the token
+   layer below ever changes shape. */
+#noscript-note {
+  max-width: 34rem;
+  margin: 0 auto;
+  padding: 3rem 1.5rem;
+  font-family: "Source Serif 4", Charter, Georgia, serif;
+  font-size: 18px;
+  line-height: 1.7;
+  color: #1C1917;
+}
+#noscript-note h1 { font-size: 24px; font-weight: 400; margin: 0 0 1rem; }
+#noscript-note a { color: #B45309; }
+
 /* ---- Tokens ---------------------------------------------------------------
    Light is the default scheme. Every value here was contrast-measured on
    2026-08-19 (see redesign-plan §2/§5 and the implementation notes):
@@ -61,6 +76,11 @@
 
   --font-ui: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   --font-writing: "Source Serif 4", Charter, "Bitstream Charter", "Iowan Old Style", Georgia, serif;
+  /* The alternate writing face, for notes where column alignment carries
+     meaning: ASCII/box-drawing diagrams, tables, code, log excerpts. System
+     faces only — the same offline reasoning that made the serif self-hosted
+     rules out downloading a second family for an opt-in mode. */
+  --font-code: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "DejaVu Sans Mono", "Liberation Mono", monospace;
 
   /* Spacing scale (density 5 / standard): 16 / 24 / 32 / 48 / 64. */
   --space-1: 16px;
@@ -593,6 +613,20 @@ textarea#editor {
 }
 textarea#editor:focus-visible { outline: none; }
 textarea#editor::selection { background: var(--selection); }
+
+/* Monospace writing mode. Only the writing surface swaps face — the filename
+   heading and the rest of the chrome stay serif, so the app still reads as
+   itself while a diagram keeps its columns. Source Serif 4's subsets carry no
+   box-drawing glyphs (U+2500–257F), so those characters were already falling
+   back to a system face at a different advance width; that mismatch is the
+   misalignment this mode removes. The font-size here is deliberately below
+   the serif's 18px: monospace faces set optically larger at equal px.
+   editor.js sets the attribute and drives zoom off the same two values. */
+:root[data-editor-font="mono"] textarea#editor {
+  font-family: var(--font-code);
+  font-size: 16px;
+  line-height: 1.6;
+}
 
 #find-bar[hidden] { display: none; }
 #find-bar {

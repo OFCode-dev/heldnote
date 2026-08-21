@@ -20,4 +20,7 @@ export const ICONS = {
   close: icon('<path d="M18 6 6 18"/><path d="m6 6 12 12"/>', 14),
   check: icon('<path d="M20 6 9 17l-5-5"/>', 44),
   wrap: icon('<path d="M3 6h18"/><path d="M3 12h15a3 3 0 1 1 0 6h-4"/><path d="m16 16-2 2 2 2"/><path d="M3 18h7"/>', 13),
+  // Monospace writing mode. Angle brackets read as "fixed width / code" at
+  // 13px far more legibly than a character grid would.
+  mono: icon('<path d="m8 7-5 5 5 5"/><path d="m16 7 5 5-5 5"/>', 13),
 };

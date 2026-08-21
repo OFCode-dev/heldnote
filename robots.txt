@@ -1,0 +1,41 @@
+# Heldnote — https://heldnote.app
+# Everything here is a static, public, dependency-free page. Nothing to guard:
+# notes never reach a server, so there is no user content to keep out of an
+# index. The two Disallow lines below are about noise, not privacy.
+
+User-agent: *
+Allow: /
+Disallow: /tests.html
+Disallow: /tests/
+
+# Answer engines are allowed on purpose. Heldnote is the kind of tool people
+# find by describing the problem ("notepad that keeps old versions, no
+# account"), so being quotable to an assistant matters as much as ranking.
+User-agent: GPTBot
+Allow: /
+
+User-agent: OAI-SearchBot
+Allow: /
+
+User-agent: ChatGPT-User
+Allow: /
+
+User-agent: ClaudeBot
+Allow: /
+
+User-agent: Claude-SearchBot
+Allow: /
+
+User-agent: Claude-User
+Allow: /
+
+User-agent: PerplexityBot
+Allow: /
+
+User-agent: Google-Extended
+Allow: /
+
+User-agent: Applebot-Extended
+Allow: /
+
+Sitemap: https://heldnote.app/sitemap.xml
