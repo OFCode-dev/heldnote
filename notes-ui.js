@@ -1,7 +1,7 @@
 // notes-ui.js
 import * as store from './store.js';
 import * as driveSync from './drive-sync.js';
-import { t, getLanguage } from './i18n.js';
+import { t, getLanguage, SUPPORTED } from './i18n.js';
 import { ICONS } from './icons.js';
 
 // The product mark: the sage notepad-on-a-monitor from the favicon/app icon
@@ -31,13 +31,30 @@ function formatRelativeTime(timestamp) {
   return new Date(timestamp).toLocaleDateString(getLanguage());
 }
 
-export function renderNotesPanel(container, { onSelect, onImportComplete, onNoteDeleted, onToggleTheme }) {
+// Endonyms — a language is named in itself, never translated. Someone stuck in
+// a UI they cannot read still recognises "English". Filtered against SUPPORTED
+// at render time, so an entry here without a string table is simply not offered.
+const LANGUAGE_NAMES = [
+  { code: 'en', name: 'English' },
+  { code: 'tr', name: 'Türkçe' },
+];
+
+export function renderNotesPanel(container, { onSelect, onImportComplete, onNoteDeleted, onToggleTheme, onChangeLanguage }) {
   container.innerHTML = `
     <header id="brand">
       ${BRAND_MARK}
       <span class="wordmark">heldnote</span>
       <span class="brand-spacer"></span>
       <button id="theme-toggle" aria-label="${t('theme.toggle')}" title="${t('theme.toggle')}">${ICONS.theme}</button>
+      <!-- A native <select>, deliberately: self-labelling, and keyboard- and
+           screen-reader-complete for free, with no popover machinery. This is a
+           temporary home — it belongs in Settings > General once that surface
+           exists (product-maturity-plan.md §3.1). Names are endonyms, so
+           someone who cannot read the current UI can still find their own. -->
+      <select id="language-select" aria-label="${t('language.label')}" title="${t('language.label')}">
+        ${LANGUAGE_NAMES.filter((entry) => SUPPORTED.includes(entry.code))
+          .map((entry) => `<option value="${entry.code}">${entry.name}</option>`).join('')}
+      </select>
     </header>
     <div class="sidebar-actions">
       <button id="new-note">${t('notes.new')}</button>
@@ -83,6 +100,12 @@ export function renderNotesPanel(container, { onSelect, onImportComplete, onNote
 
   container.querySelector('#theme-toggle').addEventListener('click', () => {
     if (onToggleTheme) onToggleTheme();
+  });
+
+  const languageSelect = container.querySelector('#language-select');
+  languageSelect.value = getLanguage();
+  languageSelect.addEventListener('change', () => {
+    if (onChangeLanguage) onChangeLanguage(languageSelect.value);
   });
 
   function updateToggleLabel() {
@@ -213,9 +236,54 @@ export function renderNotesPanel(container, { onSelect, onImportComplete, onNote
     const li = document.createElement('li');
     li.className = 'note-item trash-row';
 
-    const label = document.createElement('span');
-    label.className = 'note-title';
+    // The title is a disclosure button, not a label. Without it the only way
+    // to find out what a trashed note contains is to restore it, read it and
+    // re-trash it — and "Delete permanently" asks you to confirm destroying
+    // something you were never allowed to look at.
+    //
+    // Read-only on purpose, and structurally so: the text lands in a <pre>,
+    // which cannot be typed into, so this can never become an accidental
+    // "resurrect and modify" path that points autosave at a trashed note.
+    const label = document.createElement('button');
+    label.className = 'note-title trash-title';
     label.textContent = note.title || t('note.untitled');
+    label.setAttribute('aria-expanded', 'false');
+    label.title = t('trash.preview');
+
+    const preview = document.createElement('div');
+    preview.className = 'trash-preview';
+    preview.hidden = true;
+
+    let loaded = false;
+    label.addEventListener('click', async () => {
+      const opening = preview.hidden;
+      preview.hidden = !opening;
+      label.setAttribute('aria-expanded', String(opening));
+      label.title = opening ? t('trash.previewHide') : t('trash.preview');
+      if (!opening || loaded) return;
+      loaded = true;
+      // getNote() does not filter on trashed state, so the record is readable
+      // as-is with deletedAt populated — no store change was needed for this.
+      try {
+        const full = await store.getNote(note.id);
+        const body = document.createElement('pre');
+        body.className = 'trash-preview-text';
+        body.textContent = full.text || t('trash.previewEmpty');
+        if (!full.text) body.classList.add('is-empty');
+        const meta = document.createElement('p');
+        meta.className = 'trash-preview-meta';
+        meta.textContent = full.deletedAt
+          ? `${t('trash.trashedAt')}: ${new Date(full.deletedAt).toLocaleString(getLanguage())}`
+          : '';
+        preview.append(body, meta);
+      } catch (error) {
+        loaded = false; // let a later expand retry rather than caching failure
+        const failed = document.createElement('p');
+        failed.className = 'trash-preview-meta';
+        failed.textContent = t('trash.previewFailed');
+        preview.append(failed);
+      }
+    });
 
     const restoreButton = document.createElement('button');
     restoreButton.textContent = t('trash.restore');
@@ -234,7 +302,7 @@ export function renderNotesPanel(container, { onSelect, onImportComplete, onNote
       refresh();
     });
 
-    li.append(label, restoreButton, purgeButton);
+    li.append(label, restoreButton, purgeButton, preview);
     return li;
   }
 

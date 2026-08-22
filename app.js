@@ -1,6 +1,6 @@
 // app.js
 import * as store from './store.js';
-import { t, setLanguage, detectLanguage } from './i18n.js';
+import { t, setLanguage, detectLanguage, saveLanguage } from './i18n.js';
 import { renderNotesPanel, BRAND_MARK } from './notes-ui.js';
 import { renderEditor } from './editor.js';
 import { renderHistoryPanel } from './history-ui.js';
@@ -230,6 +230,22 @@ async function boot() {
     }
   }
 
+  // Escape closes the history sheet. Every other dismissible surface honours
+  // Escape (the find bar, the rename field); this one silently did not, which
+  // reads as the app ignoring you. The find-bar guard matters: editor.js has
+  // its own document-level Escape handler, and without this check one keypress
+  // would close both. The find bar is the innermost surface, so it wins.
+  document.addEventListener('keydown', (event) => {
+    if (event.key !== 'Escape' || !historyOpen) return;
+    const findBar = document.getElementById('find-bar');
+    if (findBar && !findBar.hidden) return;
+    historyOpen = false;
+    renderHistoryForCurrent();
+    if (activeEditor) activeEditor.setHistoryOpen(false);
+    const toggle = document.getElementById('toggle-history');
+    if (toggle) toggle.focus(); // return focus to the control that opened it
+  });
+
   window.addEventListener('popstate', (event) => {
     const toEditor = event.state && event.state.heldnoteView === 'editor';
     setView(toEditor ? 'editor' : 'list');
@@ -241,6 +257,17 @@ async function boot() {
       if (activeEditor) activeEditor.setHistoryOpen(false);
     }
   });
+
+  // Strings are baked into innerHTML when each panel renders, so a language
+  // change has to re-render everything — the sidebar, the editor toolbar, the
+  // history sheet and the status bar. A reload is the honest way to do that
+  // without hunting every string, and it is safe: the pagehide handler below
+  // flushes the open draft before the page goes away.
+  function changeLanguage(lang) {
+    const resolved = saveLanguage(lang);
+    document.documentElement.lang = resolved;
+    location.reload();
+  }
 
   function toggleTheme() {
     const root = document.documentElement;
@@ -374,6 +401,7 @@ async function boot() {
     onImportComplete: handleImportComplete,
     onNoteDeleted: handleNoteDeleted,
     onToggleTheme: toggleTheme,
+    onChangeLanguage: changeLanguage,
   });
 
   // First paint: an invitation to act, never a blank pane. If notes already

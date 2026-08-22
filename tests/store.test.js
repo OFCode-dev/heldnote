@@ -1225,7 +1225,7 @@ test('open() runs the pruning ladder at startup without any explicit runMaintena
 
 // --- Task 15: i18n.js -------------------------------------------------------
 
-import { t, setLanguage, getLanguage, detectLanguage } from '../i18n.js';
+import { t, setLanguage, getLanguage, detectLanguage, saveLanguage, getSavedLanguage, SUPPORTED } from '../i18n.js';
 
 test('i18n: exact brand copy for saving/retention states, and language switching', () => {
   setLanguage('en');
@@ -1246,13 +1246,84 @@ test('i18n: exact brand copy for saving/retention states, and language switching
   assert(t('status.saving') !== 'Saving…', 'expected a Turkish translation, not the English fallback');
 });
 
+// detectLanguage now resolves saved preference -> navigator.languages in the
+// user's own order -> navigator.language -> 'en'. These helpers stub the two
+// navigator properties *together*, because a real browser always keeps them
+// consistent (languages[0] === language); stubbing only one produces a state
+// no browser emits, which is what the earlier version of this test did.
+function withLocales(languages, run) {
+  const originals = ['languages', 'language'].map((key) => [key, Object.getOwnPropertyDescriptor(navigator, key)]);
+  Object.defineProperty(navigator, 'languages', { value: languages, configurable: true });
+  Object.defineProperty(navigator, 'language', { value: languages[0], configurable: true });
+  try {
+    run();
+  } finally {
+    for (const [key, descriptor] of originals) {
+      if (descriptor) Object.defineProperty(navigator, key, descriptor);
+    }
+  }
+}
+
+function withoutSavedLanguage(run) {
+  const saved = localStorage.getItem('heldnote-language');
+  localStorage.removeItem('heldnote-language');
+  try {
+    run();
+  } finally {
+    if (saved !== null) localStorage.setItem('heldnote-language', saved);
+  }
+}
+
 test('i18n: detectLanguage defaults to English for anything that is not Turkish', () => {
-  const original = Object.getOwnPropertyDescriptor(navigator, 'language');
-  Object.defineProperty(navigator, 'language', { value: 'fr-FR', configurable: true });
-  assertEquals(detectLanguage(), 'en');
-  Object.defineProperty(navigator, 'language', { value: 'tr-TR', configurable: true });
-  assertEquals(detectLanguage(), 'tr');
-  if (original) Object.defineProperty(navigator, 'language', original);
+  withoutSavedLanguage(() => {
+    withLocales(['fr-FR'], () => assertEquals(detectLanguage(), 'en'));
+    withLocales(['tr-TR'], () => assertEquals(detectLanguage(), 'tr'));
+    withLocales(['de-DE', 'ja-JP'], () => assertEquals(detectLanguage(), 'en'));
+  });
+});
+
+test('i18n: detectLanguage honours the order of navigator.languages', () => {
+  withoutSavedLanguage(() => {
+    // The primary tag is Turkish, but English is preferred ahead of it. The
+    // old implementation read only navigator.language and returned 'tr' here.
+    withLocales(['en-GB', 'tr-TR'], () => assertEquals(detectLanguage(), 'en'));
+    withLocales(['tr-TR', 'en-US'], () => assertEquals(detectLanguage(), 'tr'));
+    // First *supported* entry wins; unsupported ones are skipped, not fatal.
+    withLocales(['de-DE', 'tr-TR', 'en-US'], () => assertEquals(detectLanguage(), 'tr'));
+  });
+});
+
+test('i18n: a saved language outranks the browser, and survives a bad value', () => {
+  const saved = localStorage.getItem('heldnote-language');
+  try {
+    // The reported bug: a tr-* browser with no way out. A saved choice is the
+    // way out, and it must win on every subsequent boot.
+    saveLanguage('en');
+    withLocales(['tr-TR'], () => assertEquals(detectLanguage(), 'en'));
+    saveLanguage('tr');
+    withLocales(['en-US'], () => assertEquals(detectLanguage(), 'tr'));
+    assertEquals(getSavedLanguage(), 'tr');
+    // A region tag is normalised down to the supported base language.
+    saveLanguage('tr-TR');
+    assertEquals(getSavedLanguage(), 'tr');
+    // Junk in storage must not pin the UI to a language with no string table.
+    localStorage.setItem('heldnote-language', 'zz');
+    assertEquals(getSavedLanguage(), null);
+    withLocales(['en-US'], () => assertEquals(detectLanguage(), 'en'));
+  } finally {
+    if (saved !== null) localStorage.setItem('heldnote-language', saved);
+    else localStorage.removeItem('heldnote-language');
+    setLanguage('en');
+  }
+});
+
+test('i18n: setLanguage returns the resolved language and rejects unsupported tags', () => {
+  assertEquals(setLanguage('tr'), 'tr');
+  assertEquals(setLanguage('tr-TR'), 'tr');
+  assertEquals(setLanguage('de'), 'en');
+  assertEquals(setLanguage(null), 'en');
+  assert(SUPPORTED.includes('en') && SUPPORTED.includes('tr'), 'SUPPORTED should list the tables that exist');
+  setLanguage('en');
 });
 
 // --- Independent filenames: renameNote and the frozen-title contract --------

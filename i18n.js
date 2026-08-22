@@ -62,6 +62,12 @@ const STRINGS = {
     'status.words': 'words',
     'status.chars': 'characters',
     'theme.toggle': 'Switch between light and dark theme',
+    'language.label': 'Language',
+    'trash.preview': 'Show contents (read-only)',
+    'trash.previewHide': 'Hide contents',
+    'trash.previewEmpty': 'This note is empty.',
+    'trash.previewFailed': 'This note could not be read.',
+    'trash.trashedAt': 'Moved to trash',
     'drive.title': 'Google Drive',
     'drive.connect': 'Connect Google Drive',
     'drive.disconnect': 'Disconnect',
@@ -175,6 +181,12 @@ const STRINGS = {
     'status.words': 'kelime',
     'status.chars': 'karakter',
     'theme.toggle': 'Açık ve koyu tema arasında geçiş yap',
+    'language.label': 'Dil',
+    'trash.preview': 'İçeriği göster (salt okunur)',
+    'trash.previewHide': 'İçeriği gizle',
+    'trash.previewEmpty': 'Bu not boş.',
+    'trash.previewFailed': 'Bu not okunamadı.',
+    'trash.trashedAt': 'Çöp kutusuna taşındı',
     'drive.title': 'Google Drive',
     'drive.connect': 'Google Drive bağla',
     'drive.disconnect': 'Bağlantıyı kes',
@@ -227,19 +239,67 @@ const STRINGS = {
   },
 };
 
+const LANG_KEY = 'heldnote-language';
+
+// The languages that actually have a string table. Derived, not hand-listed,
+// so adding a table to STRINGS is the only step needed to support a language.
+export const SUPPORTED = Object.keys(STRINGS);
+
 let currentLanguage = 'en';
 
+// Reduces a BCP 47 tag to a supported language: 'tr-TR' -> 'tr'. Returns null
+// when nothing matches, so callers can tell "unsupported" from "defaulted".
+function normalize(tag) {
+  if (!tag) return null;
+  const lower = String(tag).toLowerCase();
+  if (STRINGS[lower]) return lower;
+  const base = lower.split('-')[0];
+  return STRINGS[base] ? base : null;
+}
+
 export function setLanguage(lang) {
-  currentLanguage = STRINGS[lang] ? lang : 'en';
+  currentLanguage = normalize(lang) || 'en';
+  return currentLanguage;
 }
 
 export function getLanguage() {
   return currentLanguage;
 }
 
+// The explicit choice. Persisted so it outranks browser detection forever — a
+// manual pick must survive both a reload and a later OS/browser locale change,
+// which is exactly what the old detect-on-every-boot behaviour broke.
+export function saveLanguage(lang) {
+  const resolved = setLanguage(lang);
+  try { localStorage.setItem(LANG_KEY, resolved); } catch (e) { /* non-fatal */ }
+  return resolved;
+}
+
+export function getSavedLanguage() {
+  try { return normalize(localStorage.getItem(LANG_KEY)); } catch (e) { return null; }
+}
+
+// Resolution order: saved preference -> browser preferences, in the user's own
+// order -> English. Previously this read only navigator.language and had no
+// saved-preference step at all, so a browser reporting tr-* was pinned to
+// Turkish permanently with no way out.
 export function detectLanguage() {
-  const lang = (navigator.language || '').toLowerCase();
-  return lang.startsWith('tr') ? 'tr' : 'en';
+  const saved = getSavedLanguage();
+  if (saved) return saved;
+  // navigator.languages is the ordered preference list and comes first, so
+  // someone whose first choice is English but whose primary tag is Turkish
+  // gets English. navigator.language is appended rather than used only as a
+  // fallback-when-empty: some environments expose just the primary tag, and a
+  // supported language there must still win over the hard 'en' default.
+  const preferences = [
+    ...(Array.isArray(navigator.languages) ? navigator.languages : []),
+    navigator.language,
+  ];
+  for (const tag of preferences) {
+    const match = normalize(tag);
+    if (match) return match;
+  }
+  return 'en';
 }
 
 export function t(key) {

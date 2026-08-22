@@ -1361,7 +1361,7 @@ async function parseImportFile(file) {
     }
     // versions is keyed [noteId, seq], so a repeated pair means the second put
     // overwrites the first and one of the two snapshots is lost on import.
-    const versionKey = `${version.noteId} ${version.seq}`;
+    const versionKey = `${version.noteId}\u0000${version.seq}`;
     if (versionKeys.has(versionKey)) {
       throw Object.assign(new Error(`file contains more than one version ${version.seq} for note ${version.noteId}`), { code: 'invalid-import' });
     }
