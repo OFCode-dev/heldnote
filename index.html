@@ -110,8 +110,15 @@
     <footer id="status-bar">
       <span id="status-revision"></span>
       <span id="status-retention"></span>
-      <span id="status-notice" hidden></span>
+      <span id="status-notice" role="status" aria-live="polite" aria-atomic="true" hidden></span>
       <span id="status-counts"></span>
+      <!-- The save state, for assistive technology only. #status-revision
+           cannot carry the live region itself: its visible text ends in a
+           timestamp that changes on every flush, so a screen reader would
+           re-announce "Saved locally" continuously while someone types. app.js
+           writes the bare state phrase here, and only when it changes. Cursor
+           position and word count are deliberately never announced. -->
+      <span id="status-a11y" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></span>
     </footer>
   </div>
   <script type="module" src="app.js"></script>

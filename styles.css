@@ -24,6 +24,22 @@
   unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
 }
 
+/* Available to assistive technology, absent from the page. Used by the status
+   bar's announcer (#status-a11y): the visible status text carries a timestamp
+   that changes on every save, so announcing it verbatim would repeat the same
+   fact on every flush. The announcer carries the state phrase alone. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
 /* The no-JavaScript fallback (index.html). Styled from literals, not tokens:
    it sits above #app in the document and must stay legible even if the token
    layer below ever changes shape. */
@@ -59,6 +75,12 @@
   --elevated-bg: #FFFFFF;
   --text: #0F172A;
   --text-secondary: #716B66;
+  /* Meta text that sits on a *tinted* row rather than the flat panel. The
+     selected note's translucent overlay composites the panel down to ~#E2E2E2,
+     where --text-secondary measures only 4.06:1 at 12px — a real 1.4.3 failure
+     on the one row the reader is looking at. Measured 2026-08-22: this value
+     is 4.86:1 on the selected row, 5.82:1 on the plain panel. */
+  --text-meta: #655F5A;
   --border: #EEEDED;
   --accent: #B45309;
   --accent-surface: #D97706;
@@ -109,6 +131,9 @@
   --elevated-bg: #2E2A27;
   --text: #FAF9F6;
   --text-secondary: #A8A29E;
+  /* Dark counterpart: --text-secondary measured 4.49:1 on the selected row's
+     composited surface — a hairline miss. This is 4.93:1 there, 6.87:1 plain. */
+  --text-meta: #B0AAA6;
   --border: #3A3532;
   --accent: #FBBF24;
   --accent-surface: #D97706;
@@ -130,6 +155,7 @@
     --elevated-bg: #2E2A27;
     --text: #FAF9F6;
     --text-secondary: #A8A29E;
+    --text-meta: #B0AAA6;
     --border: #3A3532;
     --accent: #FBBF24;
     --accent-surface: #D97706;
@@ -349,7 +375,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, summary:focus
 .note-item .note-time {
   display: block;
   font-size: 12px;
-  color: var(--text-secondary);
+  color: var(--text-meta);
   margin-top: 1px;
 }
 
@@ -473,6 +499,9 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, summary:focus
   border: 1px solid var(--border);
   background: var(--elevated-bg);
 }
+/* 13px text with 0.35rem padding lands at 22.3px — just under the 24px
+   target-size floor. Applies to the Drive buttons too, which share the row. */
+.backup-actions button { min-height: 24px; }
 #backup-panel .backup-actions button:hover { background: var(--hover-bg); }
 #backup-status { font-size: 12px; color: var(--text-secondary); min-height: 1em; padding: 0.25rem 0.5rem; }
 
@@ -575,10 +604,19 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, summary:focus
 .editor-tools {
   display: flex;
   align-items: center;
-  gap: 0.25rem;
+  /* 0.2rem, not 0.25: at 360px the row measured exactly as wide as the space
+     available, so it wrapped on a rounding hair and cost 30px of header height
+     on the commonest Android width. Trimming ~5px keeps 360px on one row while
+     the wrap below still catches 320px. */
+  gap: 0.2rem;
   /* Mobile: the tools take their own full row under back + title; a single
      row of nine controls would overflow a 375px sheet. Reset at >=768px. */
   flex: 1 0 100%;
+  /* One row of tools still overflows at 320px — the WCAG 1.4.10 reflow width,
+     measured at 328px of content in a 320px viewport. Wrapping costs a second
+     row only on the narrowest screens; horizontal scroll would cost it on
+     every interaction. */
+  flex-wrap: wrap;
 }
 .editor-tools button {
   font-size: 13px;
@@ -632,7 +670,8 @@ textarea#editor::selection { background: var(--selection); }
 #find-bar {
   display: flex;
   align-items: center;
-  gap: 0.35rem;
+  /* 8px, not 5.6px: the minimum spacing between adjacent pointer targets. */
+  gap: 0.5rem;
   flex-wrap: wrap;
   width: 100%;
   padding: 0.35rem var(--space-1) 0.5rem;
@@ -665,6 +704,11 @@ textarea#editor::selection { background: var(--selection); }
   font-size: 12px;
   cursor: pointer;
   user-select: none;
+  /* The label is the real hit area — the 13px checkbox inside it is not.
+     Measured at 19px tall, under the 24px WCAG 2.2 target-size minimum, and
+     the find bar's gaps were too tight for the spacing exception to apply. */
+  min-height: 24px;
+  padding-inline: 0.15rem;
 }
 .find-flag input { accent-color: var(--accent-surface); }
 

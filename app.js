@@ -64,6 +64,19 @@ function isSafari() {
   return true;
 }
 
+// The last phrase handed to the screen-reader announcer. Kept so an unchanged
+// state is not re-announced: 'saving' and 'saved' fire on every debounced
+// flush, and repeating "Saved locally" into a live region on each one would
+// talk over someone who is simply typing.
+let lastAnnounced = '';
+
+function announceStatus(phrase) {
+  if (phrase === lastAnnounced) return;
+  lastAnnounced = phrase;
+  const el = document.getElementById('status-a11y');
+  if (el) el.textContent = phrase;
+}
+
 function renderStatus(event) {
   const revisionEl = document.getElementById('status-revision');
   const retentionEl = document.getElementById('status-retention');
@@ -72,6 +85,10 @@ function renderStatus(event) {
   if (event.type === 'saved') {
     revisionEl.className = 'state-saved';
     revisionEl.textContent = `${t('status.saved')} · ${new Date(event.completedAt).toLocaleTimeString()}`;
+    // Outcome states only — 'saving' is deliberately not announced. Announcing
+    // it would make every flush a two-phrase alternation ("Saving…", "Saved
+    // locally"), which defeats the de-duplication and interrupts typing.
+    announceStatus(t('status.saved'));
     // Titles are user-set now and never change on save — but rows still show
     // "last modified" and sort by updatedAt, which every durable save bumps.
     // Refresh the list then, debounced so a burst of flushes is one repaint.
@@ -88,12 +105,14 @@ function renderStatus(event) {
   } else if (event.type === 'memory-only') {
     revisionEl.className = 'state-failed';
     revisionEl.textContent = t('status.notSaved');
+    announceStatus(t('status.notSaved'));
   } else if (event.type === 'save-failed') {
     // An ordinary transient failure: the visible text is unchanged and no
     // rescue buffer was populated (that is what 'memory-only' is for), so
     // this must not borrow that event's wording — see final-review Fix 4.
     revisionEl.className = 'state-failed';
     revisionEl.textContent = t('status.saveFailed');
+    announceStatus(t('status.saveFailed'));
   } else if (event.type === 'retention-changed') {
     const key = { persistent: 'retention.persistent', 'best-effort': 'retention.bestEffort', 'session-only': 'retention.sessionOnly', unknown: 'retention.unknown' }[event.retention] || 'retention.unknown';
     retentionEl.className = event.retention === 'best-effort' || event.retention === 'session-only' ? 'state-warning' : 'state-info';
