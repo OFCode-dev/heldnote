@@ -10,6 +10,19 @@
   <link rel="alternate" hreflang="x-default" href="https://heldnote.app/terms">
   <link rel="icon" type="image/png" sizes="32x32" href="/icon-32.png">
   <link rel="stylesheet" href="/styles.css">
+  <script>
+    // Mirror index.html's bootstrap: apply the stored theme before first paint.
+    // These pages load no application code, so without this an explicit choice
+    // made in the app is ignored here and the OS preference wins instead.
+    // Reads only. The editor font is deliberately not mirrored — prose pages
+    // have no editor.
+    try {
+      const theme = localStorage.getItem('heldnote-theme');
+      if (theme === 'dark' || theme === 'light') {
+        document.documentElement.dataset.theme = theme;
+      }
+    } catch (e) { /* storage may be blocked; system preference applies */ }
+  </script>
 </head>
 <body class="legal">
   <main>

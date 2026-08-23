@@ -114,9 +114,11 @@
       <span id="status-counts"></span>
       <!-- The only route from the app itself to the policy. The noscript
            block above serves crawlers; a user with JS never sees it. One
-           link, not two: #status-bar is flex-wrap:nowrap below 1024px and
-           already carries three spans, so a second link risks overflow at
-           320px. /privacy footer-links onward to /terms. -->
+           link, not two: #status-bar is flex-wrap:nowrap from 768px up
+           (styles.css @media min-width:768px) and already carries three
+           spans, so a second link risks overflow in that single-row band.
+           Below 768px the bar wraps freely. /privacy links onward to
+           /terms. -->
       <a id="status-legal" href="/privacy">Privacy</a>
       <!-- The save state, for assistive technology only. #status-revision
            cannot carry the live region itself: its visible text ends in a

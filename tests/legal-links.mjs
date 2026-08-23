@@ -107,6 +107,17 @@ if (sitemap === null) {
   }
 }
 
+// Prose pages load no application code, so they need index.html's theme
+// bootstrap inlined or they ignore a theme the reader chose in the app and
+// follow the OS instead.
+for (const page of PAGES) {
+  if (page.stub) continue;
+  const html = read(page.file);
+  if (html && !/localStorage\.getItem\('heldnote-theme'\)/.test(html)) {
+    fail(`${page.file}: no theme bootstrap; will ignore the reader's stored theme`);
+  }
+}
+
 // The app page must link to the policy somewhere a JS-enabled user can see.
 // index.html's <noscript> block also links to it, but that serves crawlers
 // only — a real visitor never renders it. Strip noscript before checking.
