@@ -1161,3 +1161,18 @@ body.legal .legal-keys span {
   body.legal { padding: var(--space-2) 1rem var(--space-4); }
   body.legal h1 { font-size: 1.625rem; }
 }
+
+/* The app's one route to the privacy policy. Sits with the status metadata
+   and stays quiet: same secondary colour as its neighbours, underlined only
+   on hover and focus so it reads as chrome rather than an action. */
+#status-legal {
+  color: var(--text-secondary);
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+#status-legal:hover,
+#status-legal:focus-visible {
+  color: var(--text);
+  text-decoration: underline;
+}

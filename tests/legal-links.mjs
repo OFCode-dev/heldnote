@@ -107,6 +107,19 @@ if (sitemap === null) {
   }
 }
 
+// The app page must link to the policy somewhere a JS-enabled user can see.
+// index.html's <noscript> block also links to it, but that serves crawlers
+// only — a real visitor never renders it. Strip noscript before checking.
+const appPage = read('index.html');
+if (appPage === null) {
+  fail('index.html: does not exist');
+} else {
+  const visible = appPage.replace(/<noscript[\s\S]*?<\/noscript>/gi, '');
+  if (!/href="\/privacy"/.test(visible)) {
+    fail('index.html: no visible link to /privacy outside <noscript>');
+  }
+}
+
 if (failures.length > 0) {
   console.error(`legal-links: ${failures.length} failure(s)\n`);
   for (const f of failures) console.error(`  - ${f}`);
