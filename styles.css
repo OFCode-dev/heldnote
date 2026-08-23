@@ -1065,3 +1065,99 @@ textarea#editor::selection { background: var(--selection); }
   }
   #history-close { display: none; }
 }
+
+/* --- Legal pages (/terms, /privacy) --------------------------------------
+   Page-scoped under body.legal so nothing here can reach the app or /about.
+   Long-form prose: a measure of ~68ch, generous leading, and headings that
+   stay legible at the sizes a dense document actually needs. */
+
+body.legal {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-ui);
+  line-height: 1.65;
+  margin: 0;
+  padding: var(--space-3) var(--space-1) var(--space-5);
+}
+
+body.legal main {
+  max-width: 68ch;
+  margin: 0 auto;
+}
+
+body.legal h1 {
+  font-family: var(--font-writing);
+  font-size: 2rem;
+  line-height: 1.2;
+  margin: 0 0 var(--space-1);
+}
+
+body.legal h2 {
+  font-size: 1.125rem;
+  line-height: 1.3;
+  margin: var(--space-3) 0 var(--space-1);
+}
+
+body.legal p,
+body.legal li {
+  font-size: 1rem;
+  margin: 0 0 var(--space-1);
+}
+
+body.legal ul {
+  padding-left: var(--space-2);
+}
+
+body.legal a {
+  color: var(--accent);
+}
+
+body.legal .legal-meta,
+body.legal .legal-updated {
+  color: var(--text-secondary);
+  font-size: 0.875rem;
+}
+
+/* The plain-language summary above the numbered sections. */
+body.legal .legal-summary {
+  background: var(--panel-bg);
+  border-left: 3px solid var(--accent);
+  padding: var(--space-1);
+  margin: 0 0 var(--space-3);
+}
+
+body.legal .legal-summary p:last-child {
+  margin-bottom: 0;
+}
+
+body.legal .legal-footer {
+  border-top: 1px solid var(--border);
+  margin-top: var(--space-4);
+  padding-top: var(--space-1);
+  color: var(--text-secondary);
+  font-size: 0.875rem;
+}
+
+/* Key inventory in the privacy policy: monospaced names, wrapping cleanly on
+   narrow screens rather than forcing the page to scroll sideways. */
+body.legal .legal-keys {
+  font-family: var(--font-code);
+  font-size: 0.875rem;
+  list-style: none;
+  padding-left: 0;
+}
+
+body.legal .legal-keys li {
+  margin-bottom: 0.5rem;
+  overflow-wrap: anywhere;
+}
+
+body.legal .legal-keys span {
+  font-family: var(--font-ui);
+  color: var(--text-secondary);
+}
+
+@media (max-width: 480px) {
+  body.legal { padding: var(--space-2) 1rem var(--space-4); }
+  body.legal h1 { font-size: 1.625rem; }
+}
