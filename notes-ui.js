@@ -1,6 +1,8 @@
 // notes-ui.js
 import * as store from './store.js';
+
 import * as driveSync from './drive-sync.js';
+import * as sync from './sync.js';
 import { t, getLanguage, SUPPORTED } from './i18n.js';
 import { ICONS } from './icons.js';
 
@@ -76,12 +78,12 @@ export function renderNotesPanel(container, { onSelect, onImportComplete, onNote
       </details>
       <div id="drive-section" hidden>
         <div class="backup-actions">
+
           <button id="drive-connect" class="drive-primary" hidden>
             <svg width="15" height="14" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M8.6 2.5h6.8L23 15.3l-3.4 6.2-7.6-13.2zM7.5 4.4 1 15.9l3.4 5.8 6.5-11.4zM6 22h12.4l3-5.3H9z"/></svg>
-            ${t('drive.connect')}
+            ${t('drive.connectSync')}
           </button>
-          <button id="drive-backup" hidden>${t('drive.backupNow')}</button>
-          <button id="drive-restore" hidden>${t('drive.restore')}</button>
+          <button id="drive-sync-now" hidden>${t('drive.syncNow')}</button>
           <button id="drive-disconnect" hidden>${t('drive.disconnect')}</button>
         </div>
         <div id="drive-status" class="drive-status"></div>
@@ -564,154 +566,86 @@ export function renderNotesPanel(container, { onSelect, onImportComplete, onNote
     }
   });
 
-  // --- Google Drive backup ---------------------------------------------
+
+  // --- Google Drive sync ------------------------------------------------
   //
-  // Hidden entirely until constants.js sets GOOGLE_DRIVE_CLIENT_ID. The Drive
-  // copy is a backup, never the source of truth: restore imports as copies
-  // (the safe, additive mode) and can never destroy local notes.
+  // Authentication remains a deliberate user action. Once connected, the
+  // coordinator owns every automatic trigger and this panel only reflects its
+  // state; keeping a second scheduler here would create competing uploads.
 
   const driveSection = container.querySelector('#drive-section');
   if (driveSync.isConfigured()) {
     driveSection.hidden = false;
     const connectButton = container.querySelector('#drive-connect');
-    const backupButton = container.querySelector('#drive-backup');
-    const restoreButton = container.querySelector('#drive-restore');
+    const syncButton = container.querySelector('#drive-sync-now');
     const disconnectButton = container.querySelector('#drive-disconnect');
     const driveStatus = container.querySelector('#drive-status');
 
-    function driveErrorMessage(error) {
-      const code = error && error.code;
-      if (code === 'consent-denied') return t('drive.errorConsent');
-      if (code === 'popup-blocked') return t('drive.errorPopup');
-      if (code === 'timeout') return t('drive.errorTimeout');
-      if (code === 'refused-empty') return t('drive.errorRefusedEmpty');
-      if (code === 'network') return t('drive.errorNetwork');
-      if (code === 'invalid-import') return t('backup.importError');
-      if (code === 'quota-exceeded') return t('backup.errorQuota');
-      return t('drive.errorGeneric');
-    }
-
-    function renderDriveState(message) {
+    function renderConnectionControls() {
       const connected = driveSync.isConnected();
       connectButton.hidden = connected;
-      backupButton.hidden = !connected;
-      restoreButton.hidden = !connected;
+      syncButton.hidden = !connected;
       disconnectButton.hidden = !connected;
-      if (message != null) {
-        driveStatus.textContent = message;
-      } else if (connected) {
-        const at = driveSync.lastBackupAt();
-        const failure = driveSync.lastFailure();
-        if (failure) {
-          // Never show a reassuring old "Last backup" time while attempts
-          // since then have been failing.
-          driveStatus.textContent = `${t('drive.failedSince')} (${new Date(failure.at).toLocaleTimeString(getLanguage())})`;
-        } else {
-          driveStatus.textContent = at
-            ? `${t('drive.lastBackup')}: ${new Date(at).toLocaleString(getLanguage())}`
-            : t('drive.noBackupYet');
-        }
-      } else {
-        driveStatus.textContent = `${t('drive.notConnected')} ${t('drive.notConnectedHint')}`;
-      }
     }
 
-    async function runDriveAction(button, busyKey, work) {
-      button.disabled = true;
-      renderDriveState(t(busyKey));
+    function renderSyncStatus(status) {
+      renderConnectionControls();
+      if (!driveSync.isConnected()) {
+        driveStatus.textContent = t('drive.syncNotConnected');
+        return;
+      }
+      if (status.state === 'disabled') driveStatus.textContent = t('drive.syncUnavailable');
+      else if (status.state === 'syncing') {
+        driveStatus.textContent = status.clockWarning
+          ? `${t('drive.syncing')} ${t('drive.clockWarning')}`
+          : t('drive.syncing');
+      } else if (status.state === 'synced') {
+        driveStatus.textContent = `${t('drive.synced')} ${new Date(status.at).toLocaleString(getLanguage())}`;
+      } else if (status.state === 'auth-needed') driveStatus.textContent = t('drive.syncAuthNeeded');
+      else if (status.state === 'retry-pending') driveStatus.textContent = t('drive.syncRetry');
+      else if (status.state === 'error' && status.reason === 'memory-pending') driveStatus.textContent = t('drive.syncMemoryPending');
+      else if (status.state === 'error' && status.reason === 'update-required') driveStatus.textContent = t('drive.syncUpdateRequired');
+      else driveStatus.textContent = t('drive.syncReady');
+    }
+
+    connectButton.addEventListener('click', async () => {
+      connectButton.disabled = true;
+      driveStatus.textContent = t('drive.connecting');
       try {
-        const message = await work();
-        renderDriveState(message != null ? message : null);
-      } catch (error) {
-        console.error('heldnote: drive action failed', error);
-        driveSync.recordFailure(error && error.code);
-        renderDriveState(driveErrorMessage(error));
-      } finally {
-        button.disabled = false;
-      }
-    }
-
-    connectButton.addEventListener('click', () => {
-      runDriveAction(connectButton, 'drive.connecting', async () => {
         await driveSync.connect();
-        // Pull BEFORE push. Connecting on a second device used to upload
-        // that device's (often empty) library over the existing Drive
-        // backup, and the user's notes never appeared on their phone. The
-        // right order is: merge down whatever Drive holds (by id — cannot
-        // duplicate, cannot overwrite local edits), then upload the merged
-        // whole. "Connected" now means "same notes here and on Drive".
-        let pulled = 0;
-        const remote = await driveSync.downloadBackup();
-        if (remote) {
-          const result = await store.importAll(remote, { mode: 'merge' });
-          pulled = result.notesAdded;
-          if (pulled > 0) {
-            viewingTrash = false;
-            updateToggleLabel();
-            await refresh();
-            if (onImportComplete) onImportComplete('merge');
-          }
-        }
-        const live = await store.listNotes({ includeTrashed: true });
-        const blob = await store.exportAll();
-        await driveSync.uploadBackup(blob, { localNoteCount: live.length });
-        return pulled > 0 ? `${t('drive.restored')} (+${pulled})` : null;
-      });
+        renderConnectionControls();
+        await sync.syncNow();
+      } catch (error) {
+        console.error('heldnote: Drive connection failed', error);
+        const key = error && error.code === 'popup-blocked'
+          ? 'drive.errorPopup'
+          : error && error.code === 'timeout'
+            ? 'drive.errorTimeout'
+            : error && error.code === 'consent-denied'
+              ? 'drive.errorConsent'
+              : 'drive.errorGeneric';
+        driveStatus.textContent = t(key);
+      } finally {
+        connectButton.disabled = false;
+      }
     });
 
-    // Automatic backup: every durable save schedules a quiet, debounced
-    // upload (drive-sync.js owns the timing rules). Failures land in the
-    // status line only — writing is never interrupted for a backup.
-    store.subscribe((event) => {
-      if (event.type !== 'saved') return;
-      driveSync.noteSaved(async () => {
-        const live = await store.listNotes({ includeTrashed: true });
-        const blob = await store.exportAll();
-        blob.localNoteCount = live.length;
-        return blob;
-      }, (at, error) => {
-        if (error && error.code === 'auth-needed') { renderDriveState(t('drive.authNeeded')); return; }
-        if (error) {
-          driveSync.recordFailure(error.code);
-          renderDriveState(driveErrorMessage(error));
-          return;
-        }
-        renderDriveState(null);
-      });
-    });
-
-    backupButton.addEventListener('click', () => {
-      runDriveAction(backupButton, 'drive.backingUp', async () => {
-        const live = await store.listNotes({ includeTrashed: true });
-        const blob = await store.exportAll();
-        await driveSync.uploadBackup(blob, { localNoteCount: live.length });
-      });
-    });
-
-    restoreButton.addEventListener('click', () => {
-      runDriveAction(restoreButton, 'drive.restoring', async () => {
-        const blob = await driveSync.downloadBackup();
-        if (!blob) return t('drive.noBackupYet');
-        // 'merge' reconciles by note id: re-restoring the same backup can
-        // never duplicate notes, and local edits are never overwritten —
-        // only notes and version snapshots this device lacks are added.
-        const result = await store.importAll(blob, { mode: 'merge' });
-        viewingTrash = false;
-        updateToggleLabel();
-        await refresh();
-        if (onImportComplete) onImportComplete('merge');
-        return result.notesAdded > 0
-          ? `${t('drive.restored')} (+${result.notesAdded})`
-          : t('drive.restoredNothingNew');
-      });
+    syncButton.addEventListener('click', async () => {
+      syncButton.disabled = true;
+      try {
+        await sync.syncNow();
+      } finally {
+        syncButton.disabled = false;
+      }
     });
 
     disconnectButton.addEventListener('click', () => {
       driveSync.disconnect();
-      renderDriveState(null);
+      renderSyncStatus({ state: 'idle' });
     });
 
-    renderDriveState(null);
+    sync.onSyncStatus(renderSyncStatus);
+    renderSyncStatus(sync.getSyncStatus());
   }
 
   refresh();

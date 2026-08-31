@@ -1,5 +1,7 @@
 import { openDb, openTransaction, awaitTransactionComplete, requestToPromise } from './db.js';
+
 import { LIMITS } from './constants.js';
+import { createStamp, migrateNoteStamps, computeTextHash } from './sync-engine.js';
 
 let conn = null;
 let listeners = new Set();
@@ -117,6 +119,115 @@ function activeConn() {
   return conn;
 }
 
+
+export function isMemoryFallback() {
+  return Boolean(memoryFallback);
+}
+
+export function hasMemoryOnlyNotes() {
+  return memoryOnlyText.size > 0;
+}
+
+function metaValue(record) {
+  if (!record) return undefined;
+  return Object.prototype.hasOwnProperty.call(record, 'value') ? record.value : record;
+}
+
+export async function getMeta(key) {
+  if (memoryFallback) return metaValue(memoryFallback.meta.get(key));
+  const tx = openTransaction(activeConn(), ['meta'], 'readonly');
+  return metaValue(await requestToPromise(tx.objectStore('meta').get(key)));
+}
+
+export async function setMeta(key, value) {
+  if (memoryFallback) {
+    memoryFallback.meta.set(key, { key, value });
+    return;
+  }
+  const tx = openTransaction(activeConn(), ['meta'], 'readwrite', { durability: 'strict' });
+  tx.objectStore('meta').put({ key, value });
+  await awaitTransactionComplete(tx);
+}
+
+export async function batchSetMeta(entries) {
+  if (memoryFallback) {
+    for (const entry of entries) memoryFallback.meta.set(entry.key, { ...entry });
+    return;
+  }
+  const tx = openTransaction(activeConn(), ['meta'], 'readwrite', { durability: 'strict' });
+  for (const entry of entries) tx.objectStore('meta').put({ ...entry });
+  await awaitTransactionComplete(tx);
+}
+
+export async function deleteMeta(key) {
+  if (memoryFallback) {
+    memoryFallback.meta.delete(key);
+    return;
+  }
+  const tx = openTransaction(activeConn(), ['meta'], 'readwrite', { durability: 'strict' });
+  tx.objectStore('meta').delete(key);
+  await awaitTransactionComplete(tx);
+}
+
+async function ensureDeviceIdInStore(metaStore) {
+  const existing = await requestToPromise(metaStore.get('deviceId'));
+  const value = metaValue(existing);
+  if (typeof value === 'string' && value) return value;
+  const id = crypto && typeof crypto.randomUUID === 'function'
+    ? crypto.randomUUID()
+    : synchronousFallbackDeviceId();
+  metaStore.put({ key: 'deviceId', value: id });
+  return id;
+}
+
+export async function getDeviceId() {
+  if (memoryFallback) {
+    const existing = metaValue(memoryFallback.meta.get('deviceId'));
+    if (existing) return existing;
+    const id = crypto && typeof crypto.randomUUID === 'function'
+      ? crypto.randomUUID()
+      : synchronousFallbackDeviceId();
+    memoryFallback.meta.set('deviceId', { key: 'deviceId', value: id });
+    return id;
+  }
+  const tx = openTransaction(activeConn(), ['meta'], 'readwrite', { durability: 'strict' });
+  const id = await ensureDeviceIdInStore(tx.objectStore('meta'));
+  await awaitTransactionComplete(tx);
+  return id;
+}
+
+export async function getHLCState() {
+  const deviceId = await getDeviceId();
+  const existing = await getMeta('hlc');
+  if (existing && Number.isFinite(existing.w) && Number.isFinite(existing.c)) {
+    return { w: existing.w, c: existing.c, d: deviceId };
+  }
+  return { w: 0, c: 0, d: deviceId };
+}
+
+export function setHLCState(state) {
+  return setMeta('hlc', { w: state.w, c: state.c, d: state.d });
+}
+
+async function mutationStamp(metaStore) {
+  const deviceId = await ensureDeviceIdInStore(metaStore);
+  const storedHlc = metaValue(await requestToPromise(metaStore.get('hlc')));
+  const state = storedHlc && Number.isFinite(storedHlc.w) && Number.isFinite(storedHlc.c)
+    ? { w: storedHlc.w, c: storedHlc.c, d: deviceId }
+    : { w: 0, c: 0, d: deviceId };
+  const stamp = createStamp(state);
+  metaStore.put({ key: 'hlc', value: state });
+
+  const storedDirty = metaValue(await requestToPromise(metaStore.get('dirtyGen')));
+  metaStore.put({ key: 'dirtyGen', value: (Number.isFinite(storedDirty) ? storedDirty : 0) + 1 });
+  return stamp;
+}
+
+function ensureNoteStamps(record, deviceId) {
+  if (!record.stamps) record.stamps = migrateNoteStamps(record.updatedAt, deviceId);
+  return record.stamps;
+}
+
 export async function close() {
   if (conn) {
     conn.close();
@@ -144,8 +255,26 @@ async function requestPersistenceOnce() {
   emit({ type: 'retention-changed', retention: granted ? 'persistent' : 'best-effort' });
 }
 
+
+let fallbackDeviceId = null;
+
+function synchronousFallbackDeviceId() {
+  if (fallbackDeviceId) return fallbackDeviceId;
+  try {
+    fallbackDeviceId = localStorage.getItem('heldnote-device-id-fallback');
+    if (!fallbackDeviceId) {
+      fallbackDeviceId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+      localStorage.setItem('heldnote-device-id-fallback', fallbackDeviceId);
+    }
+  } catch (_e) {
+    fallbackDeviceId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+  }
+  return fallbackDeviceId;
+}
+
 function newId() {
-  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+  if (crypto && typeof crypto.randomUUID === 'function') return crypto.randomUUID();
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}-${synchronousFallbackDeviceId()}`;
 }
 
 function toNoteSummary(record) {
@@ -162,16 +291,23 @@ export async function createNote() {
   if (memoryFallback) return memoryCreateNote();
   const id = newId();
   const now = Date.now();
+
   const noteRecord = {
     id, title: 'Untitled.txt', createdAt: now, updatedAt: now, localRev: 0,
     pinned: false, pinKey: 0, isDeleted: 0,
   };
   const draftRecord = { noteId: id, text: '', localRev: 0, savedAt: now, byteLength: 0 };
 
-  const tx = openTransaction(activeConn(), ['notes', 'drafts'], 'readwrite', { durability: 'strict' });
+  const tx = openTransaction(activeConn(), ['notes', 'drafts', 'meta'], 'readwrite', { durability: 'strict' });
+  const stamp = await mutationStamp(tx.objectStore('meta'));
+  noteRecord.stamps = {
+    text: { ...stamp }, title: { ...stamp },
+    pinned: { ...stamp }, lifecycle: { ...stamp },
+  };
   tx.objectStore('notes').put(noteRecord);
   tx.objectStore('drafts').put(draftRecord);
   await awaitTransactionComplete(tx);
+  emit({ type: 'sync-dirty', noteId: id });
 
   return { id, title: 'Untitled.txt', text: '', createdAt: now, updatedAt: now, pinned: false, deletedAt: null, localRev: 0 };
 }
@@ -264,24 +400,28 @@ export async function getNote(id) {
   };
 }
 
-async function updateNoteFields(id, fields) {
+
+async function updateNoteFields(id, fields, stampField) {
   if (memoryFallback) return memoryUpdateNoteFields(id, fields);
-  const tx = openTransaction(activeConn(), ['notes'], 'readwrite', { durability: 'strict' });
+  const tx = openTransaction(activeConn(), ['notes', 'meta'], 'readwrite', { durability: 'strict' });
   const store = tx.objectStore('notes');
   const record = await requestToPromise(store.get(id));
   if (!record) throw Object.assign(new Error(`note ${id} not found`), { code: 'not-found' });
+  const stamp = await mutationStamp(tx.objectStore('meta'));
+  ensureNoteStamps(record, stamp.d)[stampField] = stamp;
   Object.assign(record, fields);
   store.put(record);
   await awaitTransactionComplete(tx);
   emit({ type: 'note-changed', noteId: id });
+  emit({ type: 'sync-dirty', noteId: id });
 }
 
 export async function setPinned(id, on) {
-  await updateNoteFields(id, { pinned: on, pinKey: on ? 1 : 0 });
+  await updateNoteFields(id, { pinned: on, pinKey: on ? 1 : 0 }, 'pinned');
 }
 
 export async function trashNote(id) {
-  await updateNoteFields(id, { isDeleted: 1, deletedAt: Date.now() });
+  await updateNoteFields(id, { isDeleted: 1, deletedAt: Date.now() }, 'lifecycle');
 }
 
 // The title is a user-set filename (e.g. "notes.md") — independent of the text,
@@ -300,27 +440,35 @@ export async function renameNote(id, title) {
   // updatedAt bumps on purpose: a rename is a deliberate modification, and the
   // list sorts by updatedAt. localRev is NOT touched — it is the draft-revision
   // counter, and moving it here would corrupt flush()'s durability answers.
-  await updateNoteFields(id, { title: clean, updatedAt: Date.now() });
+
+  await updateNoteFields(id, { title: clean, updatedAt: Date.now() }, 'title');
 }
 
 export async function restoreNote(id) {
   if (memoryFallback) return memoryRestoreNote(id);
-  const tx = openTransaction(activeConn(), ['notes'], 'readwrite', { durability: 'strict' });
+
+  const tx = openTransaction(activeConn(), ['notes', 'meta'], 'readwrite', { durability: 'strict' });
   const noteStore = tx.objectStore('notes');
   const record = await requestToPromise(noteStore.get(id));
   if (!record) throw Object.assign(new Error(`note ${id} not found`), { code: 'not-found' });
+  const stamp = await mutationStamp(tx.objectStore('meta'));
+  ensureNoteStamps(record, stamp.d).lifecycle = stamp;
   record.isDeleted = 0;
   delete record.deletedAt;
   noteStore.put(record);
   await awaitTransactionComplete(tx);
   emit({ type: 'note-changed', noteId: id });
+  emit({ type: 'sync-dirty', noteId: id });
 }
 
 export async function purgeNote(id) {
   if (memoryFallback) return memoryPurgeNote(id);
-  const tx = openTransaction(activeConn(), ['notes', 'drafts', 'versions'], 'readwrite', { durability: 'strict' });
+
+  const tx = openTransaction(activeConn(), ['notes', 'drafts', 'versions', 'meta'], 'readwrite', { durability: 'strict' });
+  const stamp = await mutationStamp(tx.objectStore('meta'));
   tx.objectStore('notes').delete(id);
   tx.objectStore('drafts').delete(id);
+  tx.objectStore('meta').put({ key: `tombstone:${id}`, id, stamp });
   const versionsStore = tx.objectStore('versions');
   await new Promise((resolve, reject) => {
     const range = IDBKeyRange.bound([id, -Infinity], [id, Infinity]);
@@ -333,8 +481,10 @@ export async function purgeNote(id) {
     };
     req.onerror = () => reject(req.error);
   });
+
   await awaitTransactionComplete(tx);
   emit({ type: 'note-changed', noteId: id });
+  emit({ type: 'sync-dirty', noteId: id });
 }
 
 // --- draft layer: serialized, coalescing writer -----------------------------
@@ -516,7 +666,8 @@ async function runDraftWrite(noteId) {
       // in memoryOnlyText and announcing "not saved" would report a problem
       // about text nobody is looking at any more.
       assertWithinSizeLimit(noteId, byteLength);
-      const tx = openTransaction(activeConn(), ['notes', 'drafts'], 'readwrite', { durability: 'strict' });
+
+      const tx = openTransaction(activeConn(), ['notes', 'drafts', 'meta'], 'readwrite', { durability: 'strict' });
       // The note record is read BEFORE the draft is written. Issued the other
       // way round, a get() that fails (or a note deleted or replaced by an
       // import out from under this writer) still leaves the drafts.put()
@@ -533,6 +684,9 @@ async function runDraftWrite(noteId) {
       // title is deliberately NOT touched: it is a user-set filename now
       // (renameNote is its only writer). A draft write that rewrote it would
       // silently revert a rename on the very next keystroke.
+
+      const stamp = await mutationStamp(tx.objectStore('meta'));
+      ensureNoteStamps(noteRecord, stamp.d).text = stamp;
       noteRecord.updatedAt = now;
       noteRecord.localRev = rev;
       noteStore.put(noteRecord);
@@ -544,7 +698,9 @@ async function runDraftWrite(noteId) {
       durableRevs.set(noteId, durableRev);
       memoryOnlyText.delete(noteId);
       receipt = { noteId, requestedRev: rev, durableRev, completedAt: Date.now() };
+
       emit({ type: 'saved', ...receipt });
+      emit({ type: 'sync-dirty', noteId });
     } catch (error) {
       if (error && error.code === 'note-too-large') {
         // Deliberately NOT truncated and NOT dropped: the text the user typed
@@ -577,7 +733,8 @@ async function runDraftWrite(noteId) {
             // Recomputed rather than reused: byteLength above is scoped to
             // the outer try block and is not visible here.
             const retryByteLength = new TextEncoder().encode(text).length;
-            const retryTx = openTransaction(activeConn(), ['notes', 'drafts'], 'readwrite', { durability: 'strict' });
+
+            const retryTx = openTransaction(activeConn(), ['notes', 'drafts', 'meta'], 'readwrite', { durability: 'strict' });
             // Same read-before-write ordering as the first attempt, for the
             // same reason.
             const retryNoteStore = retryTx.objectStore('notes');
@@ -587,6 +744,9 @@ async function runDraftWrite(noteId) {
             }
             retryTx.objectStore('drafts').put({ noteId, text, localRev: rev, savedAt: now, byteLength: retryByteLength });
             // Same rule as the first attempt: the user-set title is not touched.
+
+            const retryStamp = await mutationStamp(retryTx.objectStore('meta'));
+            ensureNoteStamps(retryNoteRecord, retryStamp.d).text = retryStamp;
             retryNoteRecord.updatedAt = now;
             retryNoteRecord.localRev = rev;
             retryNoteStore.put(retryNoteRecord);
@@ -596,7 +756,9 @@ async function runDraftWrite(noteId) {
             durableRevs.set(noteId, durableRev);
             memoryOnlyText.delete(noteId);
             receipt = { noteId, requestedRev: rev, durableRev, completedAt: Date.now() };
+
             emit({ type: 'saved', ...receipt });
+            emit({ type: 'sync-dirty', noteId });
           } catch (retryError) {
             memoryOnlyText.set(noteId, text);
             receipt = { noteId, requestedRev: rev, durableRev: durableRevs.get(noteId) || 0, completedAt: Date.now(), error: retryError };
@@ -772,8 +934,9 @@ export async function listVersions(id, { before, limit } = {}) {
     req.onsuccess = () => {
       const cursor = req.result;
       if (!cursor || (limit && results.length >= limit)) { resolve(); return; }
-      const { seq, at, sourceRev, byteLength } = cursor.value;
-      results.push({ seq, at, sourceRev, size: byteLength });
+
+      const { seq, at, sourceRev, byteLength, kind, protectedUntil, lostFields } = cursor.value;
+      results.push({ seq, at, sourceRev, size: byteLength, kind, protectedUntil, lostFields });
       cursor.continue();
     };
     req.onerror = () => reject(req.error);
@@ -913,7 +1076,7 @@ async function runRestore(id, target, currentRev) {
   const checkpointSeq = needsCheckpoint ? baseSeq : null;
   const restoredSeq = needsCheckpoint ? baseSeq + 1 : baseSeq;
 
-  const tx = openTransaction(activeConn(), ['notes', 'drafts', 'versions'], 'readwrite', { durability: 'strict' });
+  const tx = openTransaction(activeConn(), ['notes', 'drafts', 'versions', 'meta'], 'readwrite', { durability: 'strict' });
 
   // Read the note record FIRST, for the same reason runDraftWrite does: a note
   // purged out from under this restore makes the dereference below throw, and a
@@ -943,6 +1106,9 @@ async function runRestore(id, target, currentRev) {
 
   // The user-set title survives a restore: version records carry no title, so
   // titles were never versioned — restoring text must not rename the note.
+
+  const restoreStamp = await mutationStamp(tx.objectStore('meta'));
+  ensureNoteStamps(noteRecord, restoreStamp.d).text = restoreStamp;
   noteRecord.updatedAt = at;
   noteRecord.localRev = nextRev;
   noteStore.put(noteRecord);
@@ -966,6 +1132,7 @@ async function runRestore(id, target, currentRev) {
   resolveWaiters(id, { noteId: id, requestedRev: nextRev, durableRev: durableRevs.get(id), completedAt: at });
   lastVersionText.set(id, target.text);
   emit({ type: 'note-changed', noteId: id });
+  emit({ type: 'sync-dirty', noteId: id });
 
   return { seq: restoredSeq, at, sourceRev: nextRev, size: byteLength };
 }
@@ -1025,10 +1192,15 @@ async function pruneNote(noteId) {
 
   const now = Date.now();
   const protectedByCount = new Set(all.slice(0, LIMITS.PROTECTED_RECENT_COUNT).map((v) => v.seq));
+
   const protectedByAge = new Set(all.filter((v) => now - v.at <= LIMITS.PROTECTED_RECENT_MS).map((v) => v.seq));
+  // Sync conflict losers carry an explicit seven-day protection fence. Count
+  // and byte pressure may prune around them, but never through that fence.
+  const protectedByConflict = new Set(all.filter((v) => v.protectedUntil > now).map((v) => v.seq));
   // all[0] is the newest version (listVersions is newest-first): explicitly
   // protected regardless of count/age so runMaintenance can never remove it.
-  const protectedSeqs = new Set([...protectedByCount, ...protectedByAge, all[0].seq]);
+
+  const protectedSeqs = new Set([...protectedByCount, ...protectedByAge, ...protectedByConflict, all[0].seq]);
 
   const protectedBytes = all.filter((v) => protectedSeqs.has(v.seq)).reduce((sum, v) => sum + v.size, 0);
   if (protectedBytes > LIMITS.PER_NOTE_HISTORY_BYTE_BUDGET) {
@@ -1072,8 +1244,188 @@ export async function runMaintenance() {
   });
 }
 
+
 async function withGlobalLock(work) {
   return navigator.locks.request('heldnote-global', work);
+}
+
+export async function getAllTombstones() {
+  if (memoryFallback) {
+    return Array.from(memoryFallback.meta.values())
+      .filter((entry) => entry.key.startsWith('tombstone:'))
+      .map((entry) => ({ id: entry.id || entry.key.slice(10), stamp: entry.stamp }));
+  }
+  const tx = openTransaction(activeConn(), ['meta'], 'readonly');
+  const records = await requestToPromise(tx.objectStore('meta').getAll());
+  return records
+    .filter((entry) => entry.key.startsWith('tombstone:'))
+    .map((entry) => ({ id: entry.id || entry.key.slice(10), stamp: entry.stamp }));
+}
+
+export async function getAllSyncBases() {
+  const records = memoryFallback
+    ? Array.from(memoryFallback.meta.values())
+    : await requestToPromise(openTransaction(activeConn(), ['meta'], 'readonly').objectStore('meta').getAll());
+  const result = new Map();
+  for (const entry of records) {
+    if (entry.key.startsWith('sync:')) {
+      result.set(entry.key.slice(5), { stamps: entry.stamps, textHash: entry.textHash });
+    }
+  }
+  return result;
+}
+
+export async function getAllNotesForSync() {
+  if (memoryFallback) return [];
+  const tx = openTransaction(activeConn(), ['notes', 'drafts', 'meta'], 'readwrite', { durability: 'strict' });
+  const noteStore = tx.objectStore('notes');
+  const notes = await requestToPromise(noteStore.getAll());
+  const drafts = await requestToPromise(tx.objectStore('drafts').getAll());
+  const draftById = new Map(drafts.map((draft) => [draft.noteId, draft]));
+  const deviceId = await ensureDeviceIdInStore(tx.objectStore('meta'));
+  const result = [];
+  for (const note of notes) {
+    const draft = draftById.get(note.id);
+    if (!draft) continue;
+    if (!note.stamps) {
+      note.stamps = migrateNoteStamps(note.updatedAt, deviceId);
+      noteStore.put(note);
+    }
+    result.push({
+      id: note.id, title: note.title, text: draft.text,
+      createdAt: note.createdAt, updatedAt: note.updatedAt,
+      pinned: note.pinKey === 1, isDeleted: note.isDeleted || 0,
+      deletedAt: note.isDeleted === 1 ? note.deletedAt : null,
+      localRev: draft.localRev, stamps: note.stamps,
+    });
+  }
+  await awaitTransactionComplete(tx);
+  return result;
+}
+
+export async function getAllVersionsForSync() {
+  if (memoryFallback) return [];
+  const tx = openTransaction(activeConn(), ['versions'], 'readonly');
+  const records = await requestToPromise(tx.objectStore('versions').getAll());
+  const result = [];
+  for (const record of records) {
+    result.push({
+      ...record,
+      textHash: record.textHash || await computeTextHash(record.text),
+    });
+  }
+  return result;
+}
+
+function versionIdentity(version) {
+  return `${version.noteId}\u0000${version.at}\u0000${version.sourceRev}\u0000${version.textHash || ''}`;
+}
+
+export async function applyMergePlan(plan) {
+  if (memoryFallback) return { applied: [], skipped: [] };
+
+  return withGlobalLock(async () => {
+    // Hash/dedupe preparation happens while the global lock is held but before
+    // the write transaction opens. crypto.subtle resolves on a later task and
+    // would otherwise let IndexedDB auto-commit the transaction underneath it.
+    const existingVersions = await getAllVersionsForSync();
+    const identities = new Set(existingVersions.map(versionIdentity));
+    const nextSeqByNote = new Map();
+    for (const version of existingVersions) {
+      nextSeqByNote.set(version.noteId, Math.max(nextSeqByNote.get(version.noteId) || 0, version.seq));
+    }
+
+    const tx = openTransaction(activeConn(), ['notes', 'drafts', 'versions', 'meta'], 'readwrite', { durability: 'strict' });
+    const notesStore = tx.objectStore('notes');
+    const draftsStore = tx.objectStore('drafts');
+    const versionsStore = tx.objectStore('versions');
+    const metaStore = tx.objectStore('meta');
+    const applied = [];
+    const skipped = [];
+    const touched = new Set();
+    const created = new Set();
+
+    for (const op of plan.noteOps) {
+      const currentNote = await requestToPromise(notesStore.get(op.noteId));
+      const currentDraft = await requestToPromise(draftsStore.get(op.noteId));
+      if (
+        op.fence
+        && currentDraft
+        && currentDraft.localRev > op.fence.localRev
+      ) {
+        skipped.push(op.noteId);
+        continue;
+      }
+
+      if (op.action === 'purge') {
+        notesStore.delete(op.noteId);
+        draftsStore.delete(op.noteId);
+        const range = IDBKeyRange.bound([op.noteId, -Infinity], [op.noteId, Infinity]);
+        await new Promise((resolve, reject) => {
+          const request = versionsStore.openCursor(range);
+          request.onsuccess = () => {
+            const cursor = request.result;
+            if (!cursor) { resolve(); return; }
+            cursor.delete();
+            cursor.continue();
+          };
+          request.onerror = () => reject(request.error);
+        });
+      } else {
+        const note = op.note;
+        const localRev = currentDraft ? currentDraft.localRev : (note.localRev || 0);
+        notesStore.put({
+          id: note.id, title: note.title, createdAt: note.createdAt,
+          updatedAt: note.updatedAt, localRev,
+          pinned: Boolean(note.pinned), pinKey: note.pinned ? 1 : 0,
+          isDeleted: note.isDeleted || 0,
+          ...(note.isDeleted ? { deletedAt: note.deletedAt } : {}),
+          stamps: note.stamps,
+        });
+        draftsStore.put({
+          noteId: note.id, text: note.text, localRev,
+          savedAt: note.updatedAt,
+          byteLength: new TextEncoder().encode(note.text).length,
+        });
+        revCounters.set(note.id, Math.max(revCounters.get(note.id) || 0, localRev));
+        durableRevs.set(note.id, Math.max(durableRevs.get(note.id) || 0, localRev));
+        if (!currentNote) created.add(note.id);
+      }
+      applied.push(op.noteId);
+      touched.add(op.noteId);
+    }
+
+    const skippedSet = new Set(skipped);
+    for (const version of [...plan.conflictVersions, ...plan.remoteVersionsToImport]) {
+      if (skippedSet.has(version.noteId)) continue;
+      const identity = versionIdentity(version);
+      if (identities.has(identity)) continue;
+      identities.add(identity);
+      const seq = (nextSeqByNote.get(version.noteId) || 0) + 1;
+      nextSeqByNote.set(version.noteId, seq);
+      versionsStore.put({
+        ...version, seq,
+        byteLength: new TextEncoder().encode(version.text).length,
+      });
+      touched.add(version.noteId);
+    }
+
+    for (const tombstone of plan.tombstoneWrites) {
+      if (!skippedSet.has(tombstone.id)) {
+        metaStore.put({ key: `tombstone:${tombstone.id}`, ...tombstone });
+      }
+    }
+    for (const id of plan.tombstoneDeletes) {
+      if (!skippedSet.has(id)) metaStore.delete(`tombstone:${id}`);
+    }
+
+    await awaitTransactionComplete(tx);
+
+    for (const id of touched) emit({ type: 'note-changed', noteId: id, source: 'sync' });
+    if (created.size > 0) emit({ type: 'imported', source: 'sync', noteIds: Array.from(created) });
+    if (touched.size > 0) emit({ type: 'sync-applied', noteIds: Array.from(touched) });
+    return { applied, skipped };
+  });
 }
 
 // --- per-note locking: cross-tab mutual exclusion via Web Locks ------------
@@ -1263,7 +1615,8 @@ export async function exportAll() {
       }
     }
 
-    const meta = await readAllMeta();
+
+    const meta = (await readAllMeta()).filter((entry) => !isSyncInternalMetaKey(entry.key));
 
     const payload = { schemaVersion: SCHEMA_VERSION, exportedAt: Date.now(), notes, versions, meta };
     return new Blob([JSON.stringify(payload)], { type: 'application/json' });
@@ -1301,6 +1654,21 @@ function isValidImportedVersion(version) {
     && isFiniteNumber(version.at)
     && isFiniteNumber(version.sourceRev)
     && typeof version.text === 'string';
+}
+
+
+function isSyncInternalMetaKey(key) {
+  return key === 'deviceId'
+    || key === 'hlc'
+    || key === 'dirtyGen'
+    || key === 'sync-retry-pending'
+    || key === 'initialScanDone'
+    || key === 'lastSyncAt'
+    || key === 'headRevisionId'
+    || key.startsWith('sync:')
+    || key.startsWith('tombstone:')
+    || key.startsWith('dirty:')
+    || key.startsWith('journal:');
 }
 
 function isValidImportedMetaEntry(entry) {
@@ -1379,7 +1747,8 @@ async function parseImportFile(file) {
     }
   }
 
-  return { ...parsed, meta };
+
+  return { ...parsed, meta: meta.filter((entry) => !isSyncInternalMetaKey(entry.key)) };
 }
 
 function noteRecordFrom(note, idOverride) {
@@ -1889,6 +2258,7 @@ function memoryRestoreVersion(id, seq) {
   resolveWaiters(id, { noteId: id, requestedRev: nextRev, durableRev: durableRevs.get(id), completedAt: at });
   lastVersionText.set(id, target.text);
   emit({ type: 'note-changed', noteId: id });
+  emit({ type: 'sync-dirty', noteId: id });
 
   return { seq: restoredSeq, at, sourceRev: nextRev, size: byteLength };
 }
@@ -1907,7 +2277,9 @@ function memoryExportAll() {
 
   // Always an array, empty or not, so the file shape is identical on both
   // paths and importAll's optional-meta handling never has to special-case one.
-  const meta = Array.from(memoryFallback.meta.values());
+
+  const meta = Array.from(memoryFallback.meta.values())
+    .filter((entry) => !isSyncInternalMetaKey(entry.key));
 
   const payload = { schemaVersion: SCHEMA_VERSION, exportedAt: Date.now(), notes, versions, meta };
   return new Blob([JSON.stringify(payload)], { type: 'application/json' });

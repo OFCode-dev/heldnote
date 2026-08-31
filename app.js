@@ -3,7 +3,9 @@ import * as store from './store.js';
 import { t, setLanguage, detectLanguage, saveLanguage } from './i18n.js';
 import { renderNotesPanel, BRAND_MARK } from './notes-ui.js';
 import { renderEditor } from './editor.js';
+
 import { renderHistoryPanel } from './history-ui.js';
+import { initSync } from './sync.js';
 
 let currentNoteId = null;
 let currentNoteRev = 0; // set by Task 18's editor via onRevChange; flush() target for lifecycle events
@@ -396,6 +398,7 @@ async function boot() {
     if (id === currentNoteId) closeEditor();
   }
 
+
   notesPanelHandle = renderNotesPanel(document.getElementById('notes-panel'), {
     onSelect: selectNote,
     onImportComplete: handleImportComplete,
@@ -403,6 +406,21 @@ async function boot() {
     onToggleTheme: toggleTheme,
     onChangeLanguage: changeLanguage,
   });
+
+  // A merge can replace the durable draft underneath an open editor. Reload
+  // only when that editor's note was actually applied; fence-skipped notes
+  // keep the user's newer in-memory view and will be merged next round.
+  store.subscribe((event) => {
+    if (
+      event.type === 'sync-applied'
+      && currentNoteId
+      && event.noteIds.includes(currentNoteId)
+    ) {
+      selectNote(currentNoteId, { switchView: false });
+    }
+  });
+
+  initSync();
 
   // First paint: an invitation to act, never a blank pane. If notes already
   // exist, open the most recent one so returning users land back in their

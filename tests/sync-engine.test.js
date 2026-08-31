@@ -164,7 +164,7 @@ test('edit on A, sync A, sync B → B gets A\'s text (acceptance 1)', async () =
   const baseStamp = stamp(100, 0, 'A');
   const newStamp = stamp(200, 0, 'A');
   const base = { stamps: makeStamps(100, 0, 'A'), textHash: await computeTextHash('old') };
-  const localNote = makeNote('n1', 'old', makeStamps(100, 0, 'B'), { localRev: 1 });
+  const localNote = makeNote('n1', 'old', makeStamps(100, 0, 'A'), { localRev: 1 });
   const remoteNote = makeNote('n1', 'edited on A', { ...makeStamps(100, 0, 'A'), text: newStamp }, {});
   // Override remote text stamp to be newer
   remoteNote.stamps.text = newStamp;

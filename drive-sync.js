@@ -15,7 +15,9 @@
 import { GOOGLE_DRIVE_CLIENT_ID } from './constants.js';
 
 const SCOPE = 'https://www.googleapis.com/auth/drive.appdata';
+
 const BACKUP_FILE_NAME = 'heldnote-backup.json';
+const SYNC_FILE_NAME = 'heldnote-sync.json';
 const GIS_SRC = 'https://accounts.google.com/gsi/client';
 const CONNECTED_KEY = 'heldnote-drive-connected';
 const LAST_BACKUP_KEY = 'heldnote-drive-last-backup';
@@ -203,7 +205,8 @@ async function findBackupFile(token) {
 // Runs `work(token)`, transparently re-authenticating once if the cached
 // token turns out to be stale — without re-prompting an already-consented
 // user (prompt: '').
-async function withToken(work, { silent = false } = {}) {
+
+export async function withToken(work, { silent = false } = {}) {
   let token = await getToken();
   try {
     return await work(token);
@@ -233,6 +236,106 @@ export function disconnect() {
   if (token && window.google && window.google.accounts && window.google.accounts.oauth2) {
     try { window.google.accounts.oauth2.revoke(token, () => {}); } catch (e) { /* best effort */ }
   }
+}
+
+
+async function listNamedFiles(token, name, fields) {
+  const files = [];
+  let pageToken = null;
+  do {
+    const query = encodeURIComponent(`name='${name}' and trashed=false`);
+    const page = pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : '';
+    const url = `https://www.googleapis.com/drive/v3/files?spaces=appDataFolder&q=${query}&pageSize=1000&fields=nextPageToken,files(${fields})${page}`;
+    const response = await driveFetch(token, url);
+    const data = await response.json();
+    if (Array.isArray(data.files)) files.push(...data.files);
+    pageToken = data.nextPageToken || null;
+  } while (pageToken);
+  return files;
+}
+
+// Drive occasionally leaves duplicate appData files after an interrupted
+// create. Sync must see every copy: choosing only the newest can discard a
+// device's last successful snapshot before the union phase has read it.
+export function listAllSyncFiles(token) {
+  return listNamedFiles(token, SYNC_FILE_NAME, 'id,headRevisionId');
+}
+
+export async function downloadSyncFileText(token, fileId) {
+  const response = await driveFetch(token, `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}?alt=media`);
+  return response.text();
+}
+
+export async function uploadSyncFile(token, blob, { existingFileId, knownHeadRevisionId } = {}) {
+  if (existingFileId) {
+    // Drive has no media compare-and-swap. Re-reading the revision immediately
+    // before PATCH is the narrowest guard available; the coordinator treats a
+    // mismatch as a signal to download and merge again.
+    const metadataResponse = await driveFetch(
+      token,
+      `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(existingFileId)}?fields=id,headRevisionId`,
+    );
+    const metadata = await metadataResponse.json();
+    if (
+      knownHeadRevisionId
+      && metadata.headRevisionId
+      && metadata.headRevisionId !== knownHeadRevisionId
+    ) {
+      throw driveError('revision-mismatch', 'Drive file changed since download');
+    }
+
+    const response = await driveFetch(
+      token,
+      `https://www.googleapis.com/upload/drive/v3/files/${encodeURIComponent(existingFileId)}?uploadType=media&fields=id,headRevisionId`,
+      {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: blob,
+      },
+    );
+    const result = await response.json();
+    if (!result.headRevisionId) {
+      throw driveError('drive-failed', 'Drive did not return a revision after upload');
+    }
+    return { fileId: result.id || existingFileId, headRevisionId: result.headRevisionId };
+  }
+
+  const metadata = { name: SYNC_FILE_NAME, parents: ['appDataFolder'] };
+  const form = new FormData();
+  form.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
+  form.append('file', blob);
+  const response = await driveFetch(
+    token,
+    'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,headRevisionId',
+    { method: 'POST', body: form },
+  );
+  const result = await response.json();
+  if (!result.id || !result.headRevisionId) {
+    throw driveError('drive-failed', 'Drive did not return file and revision ids after upload');
+  }
+  return { fileId: result.id, headRevisionId: result.headRevisionId };
+}
+
+export async function deleteSyncFiles(token, fileIds) {
+  // Duplicate cleanup is deliberately best-effort. The successful canonical
+  // upload is already durable; a failed DELETE merely means the same union is
+  // read again next time.
+  await Promise.all((fileIds || []).map(async (id) => {
+    try {
+      await driveFetch(token, `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    } catch (error) {
+      console.warn('heldnote: could not delete duplicate sync file', id, error);
+    }
+  }));
+}
+
+export function listLegacyBackups(token) {
+  return listNamedFiles(token, BACKUP_FILE_NAME, 'id');
+}
+
+export async function downloadLegacyBackupText(token, fileId) {
+  const response = await driveFetch(token, `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}?alt=media`);
+  return response.text();
 }
 
 // Uploads the given backup Blob (store.exportAll()'s output) to the
@@ -272,59 +375,9 @@ export async function uploadBackup(blob, { silent = false, localNoteCount } = {}
   }, { silent });
 }
 
-// --- Automatic backup -----------------------------------------------------
-//
-// "Sync" here is deliberately one-way: local notes are the source of truth,
-// Drive holds a rolling snapshot. What must never be true is "the user wrote
-// for an hour and Drive still has yesterday's file because they forgot a
-// button". So: every durable local save schedules a quiet upload, debounced
-// so a writing session becomes one upload, rate-limited so Drive is touched
-// at most once per MIN_INTERVAL even during constant typing.
-
-const AUTO_DEBOUNCE_MS = 30_000;      // quiet period after the last save
-const AUTO_MIN_INTERVAL_MS = 300_000; // at most one auto-upload per 5 min
-
-let autoTimer = null;
-let autoUploadInFlight = false;
-let lastAutoUploadAt = 0;
 
 export function hasFreshToken() {
   return !!accessToken && Date.now() < tokenExpiresAt - 60_000;
-}
-
-// exportAll: () => Promise<Blob> (store.exportAll), onDone: (ts|null, error?) => void
-export function noteSaved(exportAll, onDone) {
-  if (!isConfigured() || !isConnected()) return;
-  // Without a live token an upload would need requestAccessToken, and outside
-  // a user gesture that risks a popup (or a popup-blocker fight) in the
-  // middle of writing. Surface a quiet "one click to resume backups" state
-  // instead; the next manual Drive action refreshes the token and auto-backup
-  // takes over again.
-  if (!hasFreshToken()) {
-    if (onDone) onDone(null, driveError('auth-needed', 'no live token'));
-    return;
-  }
-  if (autoTimer) clearTimeout(autoTimer);
-  const wait = Math.max(AUTO_DEBOUNCE_MS, lastAutoUploadAt + AUTO_MIN_INTERVAL_MS - Date.now());
-  autoTimer = setTimeout(async () => {
-    autoTimer = null;
-    if (autoUploadInFlight) return;
-    autoUploadInFlight = true;
-    try {
-      const blob = await exportAll();
-      const at = await uploadBackup(blob, { silent: true, localNoteCount: blob.localNoteCount });
-      lastAutoUploadAt = at;
-      if (onDone) onDone(at);
-    } catch (error) {
-      // Never interrupt writing for a failed background backup: report to the
-      // caller (which shows it in the quiet Drive status line) and retry on
-      // the next save.
-      console.error('heldnote: auto backup failed', error);
-      if (onDone) onDone(null, error);
-    } finally {
-      autoUploadInFlight = false;
-    }
-  }, wait);
 }
 
 // Downloads the newest Drive backup as a Blob for store.importAll().

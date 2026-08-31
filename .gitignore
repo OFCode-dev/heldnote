@@ -8,3 +8,9 @@ quick-keep-notepad-spec.zip
 .claude/
 docs/
 .superpowers/
+
+# local orchestration/test artifacts
+logs/
+node_modules/
+package.json
+package-lock.json
