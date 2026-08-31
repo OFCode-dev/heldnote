@@ -539,3 +539,55 @@ test('lostFields captures losing non-text field values when text also conflicts'
   assert(cv.lostFields, 'conflict version must carry lostFields');
   assert('title' in cv.lostFields, 'lostFields must include the losing title');
 });
+
+// --- Retention parity with pruneNote [live-test finding 2026-08-31] --------
+
+test('versions older than the age window still sync while inside the newest-N count', async () => {
+  const now = Date.now();
+  const base = { stamps: makeStamps(now - 1000, 0, 'A'), textHash: await computeTextHash('t') };
+  const note = makeNote('n1', 't', makeStamps(now - 1000, 0, 'A'), { localRev: 1 });
+  // Ten versions, all 5-15 days old — far outside the 24h age window, but
+  // well inside PROTECTED_RECENT_COUNT, so pruneNote would keep every one.
+  const versions = [];
+  for (let i = 0; i < 10; i++) {
+    versions.push({ noteId: 'n1', at: now - (5 + i) * 24 * 60 * 60 * 1000, sourceRev: i, textHash: await computeTextHash('v' + i), text: 'v' + i });
+  }
+  const plan = await computeMergePlan({
+    localNotes: [note], localVersions: versions, remoteNotes: [{ ...note }],
+    remoteVersions: [], localTombstones: [], remoteTombstones: [],
+    bases: new Map([['n1', base]]), deviceId: 'A',
+  });
+  assertEquals(plan.uploadPayload.versions.length, 10,
+    'old-but-recent-by-count versions must be in the upload payload');
+});
+
+test('remote versions inside the count window import even when older than the age window', async () => {
+  const now = Date.now();
+  const base = { stamps: makeStamps(now - 1000, 0, 'A'), textHash: await computeTextHash('t') };
+  const note = makeNote('n1', 't', makeStamps(now - 1000, 0, 'A'), { localRev: 1 });
+  const remoteVersion = { noteId: 'n1', at: now - 10 * 24 * 60 * 60 * 1000, sourceRev: 3, textHash: await computeTextHash('old history'), text: 'old history' };
+  const plan = await computeMergePlan({
+    localNotes: [note], localVersions: [], remoteNotes: [{ ...note }],
+    remoteVersions: [remoteVersion], localTombstones: [], remoteTombstones: [],
+    bases: new Map([['n1', base]]), deviceId: 'A',
+  });
+  assertEquals(plan.remoteVersionsToImport.length, 1, 'a 10-day-old remote version within the count window must import');
+});
+
+test('beyond the count window, old unprotected versions are dropped from upload', async () => {
+  const now = Date.now();
+  const base = { stamps: makeStamps(now - 1000, 0, 'A'), textHash: await computeTextHash('t') };
+  const note = makeNote('n1', 't', makeStamps(now - 1000, 0, 'A'), { localRev: 1 });
+  const versions = [];
+  const total = 60; // PROTECTED_RECENT_COUNT is 50
+  for (let i = 0; i < total; i++) {
+    versions.push({ noteId: 'n1', at: now - (2 + i) * 24 * 60 * 60 * 1000, sourceRev: i, textHash: await computeTextHash('w' + i), text: 'w' + i });
+  }
+  const plan = await computeMergePlan({
+    localNotes: [note], localVersions: versions, remoteNotes: [{ ...note }],
+    remoteVersions: [], localTombstones: [], remoteTombstones: [],
+    bases: new Map([['n1', base]]), deviceId: 'A',
+  });
+  assertEquals(plan.uploadPayload.versions.length, 50,
+    'only the newest PROTECTED_RECENT_COUNT old versions travel');
+});

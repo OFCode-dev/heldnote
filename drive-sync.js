@@ -23,6 +23,17 @@ const CONNECTED_KEY = 'heldnote-drive-connected';
 const LAST_BACKUP_KEY = 'heldnote-drive-last-backup';
 const LAST_ERROR_KEY = 'heldnote-drive-last-error';
 const TOKEN_KEY = 'heldnote-drive-token';
+// Set once a token has ever been granted. Its presence means Google already
+// holds a grant for this app, so token requests use prompt: '' — Google then
+// shows UI only when it actually needs something. The old behaviour passed
+// prompt: 'consent' on every connect, which ORDERS Google to re-show the full
+// consent screen even though the grant exists — the single loudest complaint
+// from real two-device use.
+const GRANTED_KEY = 'heldnote-drive-granted';
+
+function hasEverGranted() {
+  try { return localStorage.getItem(GRANTED_KEY) === '1'; } catch (e) { return false; }
+}
 
 let tokenClient = null;
 let accessToken = null;
@@ -163,6 +174,7 @@ async function getToken({ forceConsent = false } = {}) {
       accessToken = response.access_token;
       tokenExpiresAt = Date.now() + (Number(response.expires_in) || 3600) * 1000;
       persistToken();
+      try { localStorage.setItem(GRANTED_KEY, '1'); } catch (e) { /* cosmetic */ }
       finishResolve(accessToken);
     };
     tokenClient.error_callback = (error) => {
@@ -172,7 +184,11 @@ async function getToken({ forceConsent = false } = {}) {
       else finishReject(driveError('auth-failed', String(type || error)));
     };
     try {
-      tokenClient.requestAccessToken({ prompt: forceConsent ? 'consent' : '' });
+      // 'consent' only on the very first connect ever (no recorded grant) or
+      // right after an explicit disconnect, which revokes the grant. In every
+      // other case prompt: '' lets Google decide: with a live session and an
+      // existing grant the popup self-closes without showing a consent screen.
+      tokenClient.requestAccessToken({ prompt: forceConsent && !hasEverGranted() ? 'consent' : '' });
     } catch (error) {
       finishReject(driveError('auth-failed', String(error)));
     }
@@ -232,6 +248,9 @@ export function disconnect() {
   const token = accessToken;
   clearToken();
   setConnected(false);
+  // The revoke below invalidates the grant server-side, so the next connect
+  // legitimately needs the consent screen again.
+  try { localStorage.removeItem(GRANTED_KEY); } catch (e) { /* cosmetic */ }
   // Best-effort revoke; local state is already cleared either way.
   if (token && window.google && window.google.accounts && window.google.accounts.oauth2) {
     try { window.google.accounts.oauth2.revoke(token, () => {}); } catch (e) { /* best effort */ }

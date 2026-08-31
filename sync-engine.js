@@ -301,7 +301,33 @@ export async function computeMergePlan({
 
   const retentionNow = Date.now();
   const retentionCutoff = retentionNow - LIMITS.PROTECTED_RECENT_MS;
-  const retainedVersion = (v) => v.protectedUntil > retentionNow || v.at >= retentionCutoff;
+  // Mirrors pruneNote's protection rule: a version travels in the sync file
+  // if the device itself would keep it — the newest PROTECTED_RECENT_COUNT
+  // per note, anything younger than PROTECTED_RECENT_MS, an unexpired
+  // conflict fence, and always a note's newest version. The first shipped
+  // rule was age-only, and the real-library test showed the consequence:
+  // 235 of 276 versions vanished from the sync file, so a second device
+  // opened History and found it near-empty [live-test finding, 2026-08-31].
+  const versionKey = (v) => `${v.noteId}\u0000${v.at}\u0000${v.sourceRev}\u0000${v.textHash || ''}`;
+  function buildRetainedSet(versions) {
+    const byNote = new Map();
+    for (const v of versions) {
+      if (!byNote.has(v.noteId)) byNote.set(v.noteId, []);
+      byNote.get(v.noteId).push(v);
+    }
+    const keep = new Set();
+    for (const list of byNote.values()) {
+      list.sort((a, b) => (b.at - a.at) || ((b.sourceRev || 0) - (a.sourceRev || 0)));
+      list.forEach((v, index) => {
+        if (index === 0
+            || index < LIMITS.PROTECTED_RECENT_COUNT
+            || v.at >= retentionCutoff
+            || v.protectedUntil > retentionNow) keep.add(versionKey(v));
+      });
+    }
+    return keep;
+  }
+  const retainedRemote = buildRetainedSet(remoteVersions);
 
   const localVIds = new Set();
   for (const v of localVersions) localVIds.add(`${v.noteId}\u0000${v.at}\u0000${v.sourceRev}\u0000${v.textHash || ''}`);
@@ -316,7 +342,7 @@ export async function computeMergePlan({
   function importRemoteVersions(noteId) {
 
     for (const v of (remoteVByNote.get(noteId) || [])) {
-      if (!retainedVersion(v)) continue;
+      if (!retainedRemote.has(versionKey(v))) continue;
       const k = `${v.noteId}\u0000${v.at}\u0000${v.sourceRev}\u0000${v.textHash}`;
       if (!localVIds.has(k)) { plan.remoteVersionsToImport.push(v); localVIds.add(k); }
     }
@@ -519,9 +545,13 @@ export async function computeMergePlan({
   const surv = new Set(plan.mergedNotes.filter((n) => !skippedIds.has(n.id)).map((n) => n.id));
   const upIds = new Set();
   const upVersions = [];
+  // The count window applies to the COMBINED set: local, remote and the new
+  // conflict versions compete for the same newest-N slots, exactly as they
+  // would after being merged into one store.
+  const retainedUpload = buildRetainedSet([...localVersions, ...remoteVersions, ...plan.conflictVersions]);
   function addV(v) {
 
-    if (!surv.has(v.noteId) || !retainedVersion(v)) return;
+    if (!surv.has(v.noteId) || !retainedUpload.has(versionKey(v))) return;
     const k = `${v.noteId}\u0000${v.at}\u0000${v.sourceRev}\u0000${v.textHash || ''}`;
     if (upIds.has(k)) return;
     upIds.add(k);
