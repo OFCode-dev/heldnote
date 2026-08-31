@@ -17,16 +17,22 @@ through several review-and-fix passes.
 
 Two-way Google Drive sync — the intended v2 feature — is implemented on the
 `feature/drive-sync` branch (`sync-engine.js`, `sync.js`, and the v2 protocol
-in `drive-sync.js`); see "Sync" below for the model. It is inert until
-`constants.js` carries a `GOOGLE_DRIVE_CLIENT_ID`, and it has not yet been
-exercised against real Drive on two real devices.
+in `drive-sync.js`); see "Sync" below for the model. The OAuth client id is
+already configured, so the feature is live on that branch — but it has not yet
+been exercised against real Drive on two real devices, and `main` still ships
+the old one-way backup UI.
 
 Genuinely outstanding, not yet done:
 
-- **A Google OAuth client id for Drive sync**, and a two-device end-to-end run
-  against real Drive: phone and desktop editing the same note, going offline,
-  resolving a conflict. The merge engine is unit-tested and the store paths are
-  tested, but no test talks to Drive itself.
+- **A two-device end-to-end run against real Drive** — phone and desktop
+  editing the same note, going offline, resolving a conflict, and a fresh
+  browser pulling an existing library. The merge engine is unit-tested and the
+  store paths are tested, but no test talks to Drive itself, so this is the one
+  gap between "the tests pass" and "sync works".
+- **Merging `feature/drive-sync` into `main`.** Until then the deployed site
+  keeps the v1 one-way backup UI ("Back up to Drive" / "Restore from Drive").
+  The first sync after a merge reads any existing `heldnote-backup.json` once
+  as its baseline, so nothing already in Drive is stranded.
 
 - **DNS and hosting configuration for `heldnote.app`** — the A/AAAA and `www`
   CNAME records, the GitHub Pages custom-domain setting, "Enforce HTTPS", and
