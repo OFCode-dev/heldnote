@@ -15,7 +15,18 @@ Implemented and under active review. All planned v1 modules (`db.js`,
 `store.js`, `i18n.js`, and the UI layer) are written; the codebase has been
 through several review-and-fix passes.
 
+Two-way Google Drive sync — the intended v2 feature — is implemented on the
+`feature/drive-sync` branch (`sync-engine.js`, `sync.js`, and the v2 protocol
+in `drive-sync.js`); see "Sync" below for the model. It is inert until
+`constants.js` carries a `GOOGLE_DRIVE_CLIENT_ID`, and it has not yet been
+exercised against real Drive on two real devices.
+
 Genuinely outstanding, not yet done:
+
+- **A Google OAuth client id for Drive sync**, and a two-device end-to-end run
+  against real Drive: phone and desktop editing the same note, going offline,
+  resolving a conflict. The merge engine is unit-tested and the store paths are
+  tested, but no test talks to Drive itself.
 
 - **DNS and hosting configuration for `heldnote.app`** — the A/AAAA and `www`
   CNAME records, the GitHub Pages custom-domain setting, "Enforce HTTPS", and
@@ -52,6 +63,9 @@ section is the place that status should actually be found.
 - JSON export (full backup, downloaded as a file) and import, either as
   copies with fresh ids or as a full destructive replace (with an explicit
   warning and an offered safety export first)
+- Two-way Google Drive sync across devices, with per-field merging and the
+  losing side of a conflict preserved in history (branch `feature/drive-sync`;
+  see "Sync")
 - Turkish and English UI, following the browser's language
 - An honest status bar: the durable save state and the browser's storage
   retention state are always shown as two separate facts, never merged into
@@ -64,6 +78,71 @@ The editor is a plain textarea by design, with find & replace, word wrap,
 zoom, a light/dark theme toggle, copy, and .txt download built around it.
 Syntax highlighting with line numbers is deliberately not implemented, and
 is not a scope commitment.
+
+## Sync
+
+Drive sync is two-way, not a backup: every device pulls, merges, and pushes one
+file (`heldnote-sync.json`) in Drive's app-private `appDataFolder`. There is no
+server, and no account beyond the user's own Google sign-in. The rules that
+matter:
+
+- **Ordering never trusts the wall clock.** Every synchronized mutation carries
+  a hybrid logical clock stamp `{w, c, d}` — non-decreasing wall time, a
+  per-device counter, and the device id. Two devices comparing stamps reach the
+  same answer, with no ties, and a device with a wrong clock cannot win
+  permanently.
+- **Notes merge field by field**, not as whole records. Text, title, pinned and
+  lifecycle (trashed or live) each carry their own stamp, compared against a
+  stored merge base. Renaming a note on the phone while editing its body on the
+  desktop merges cleanly instead of one edit erasing the other.
+- **A real text conflict never loses text.** The higher stamp becomes the live
+  text; the losing text is written into that note's version history as a
+  `sync-conflict` version, protected from pruning for seven days. Conflicts
+  resolve silently — there is no dialog to answer.
+- **Deletion travels as a tombstone**, written in the same IndexedDB
+  transaction that purges the note, so a purge propagates instead of the note
+  resurrecting from the other device. A purge that races an edit does not
+  destroy it: the note lands in Trash carrying the edited text. Absence of a
+  note is never read as deletion.
+- **Typing during a sync is safe.** Each note carries a fence — its draft
+  revision plus a mutation counter — and a note touched between
+  merge-computation and merge-apply is skipped that round and merged on the
+  next one.
+- **The upload is guarded by Drive's `headRevisionId`.** If another device
+  wrote in the meantime, the cycle restarts from download and re-merges. A
+  fresh or empty device pulls before it is ever allowed to upload, and a sync
+  file written by a newer app version aborts the cycle rather than being
+  overwritten by an older client.
+- A pre-existing one-way `heldnote-backup.json` is read once as the initial
+  remote baseline and then left alone. Manual JSON export and import are
+  unchanged, and never carry sync metadata between devices.
+
+Sync runs on load, on returning to the tab, after edits (30s debounce, at most
+once per five minutes), on "Sync now", and when the network comes back. In
+memory-fallback mode, when IndexedDB is unavailable, sync is disabled and says
+so rather than reporting a false success.
+
+## Tests
+
+`tests.html` is the browser test runner; open it directly to watch the suite in
+a real browser. For a headless run:
+
+```sh
+npm install --no-save playwright-core@1.49.1   # Node 18; drop the pin on Node 20+
+node scripts/run-tests.mjs
+```
+
+It serves the repository over localhost, runs `tests.html` in system Chromium,
+prints the harness summary, and exits non-zero on any failure.
+`tests/measure-latency.html` is separate and manual: it exists to gather the
+real-hardware numbers the byte budgets still need.
+
+## Repository layout
+
+Working material is deliberately not shipped. `docs/` (the design spec, the
+sync contract, and the review records behind it), `.claude/`, `.superpowers/`
+and `logs/` are gitignored and live only on the development machine. The
+product is the files at the repository root, plus `tests/` and `scripts/`.
 
 ## Deployment
 
@@ -85,10 +164,11 @@ see "Status" above.
 
 ## Not in v1
 
-Google Drive sync, writing straight to disk, tags and folders, markdown preview,
-sharing, and encryption. Sync is the intended v2; the data model already carries
-the fields it will need.
+Writing straight to disk, tags and folders, markdown preview, sharing, and
+encryption. Google Drive sync was the intended v2 and is now implemented on
+`feature/drive-sync` — see "Sync".
 
 ## License
 
-MIT
+All rights reserved — see `LICENSE`. The source is published to be read and
+reviewed, not relicensed.
