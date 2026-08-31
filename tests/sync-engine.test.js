@@ -2,7 +2,8 @@ import { test, assert, assertEquals } from './test-harness.js';
 import {
   compareStamps, createStamp, advanceHLC, migrateNoteStamps, legacyStamps,
   mergeField, computeMergePlan, computeTextHash, validateSyncFile,
-  buildUploadPayload, unionSyncFiles,
+
+  buildUploadPayload, unionSyncFiles, mergeNotePair,
   SYNC_FORMAT, CONFLICT_PROTECTION_MS, CLOCK_SKEW_THRESHOLD_MS, STAMP_FIELDS,
 } from '../sync-engine.js';
 
@@ -98,9 +99,10 @@ test('migrateNoteStamps: creates all four fields from updatedAt', () => {
   }
 });
 
-test('legacyStamps: uses d:"legacy"', () => {
+
+test('legacyStamps: uses a sentinel below UUID device ids', () => {
   const s = legacyStamps(999);
-  assertEquals(s.text.d, 'legacy');
+  assertEquals(s.text.d, '0000');
 });
 
 // --- mergeField ------------------------------------------------------------
@@ -436,9 +438,11 @@ test('validateSyncFile: valid file passes', () => {
 
 test('validateSyncFile: future syncFormat rejected with "update the app"', () => {
   const raw = JSON.stringify({ syncFormat: 99, schemaVersion: 1, notes: [], versions: [], tombstones: [] });
-  const { errors } = validateSyncFile(raw);
+
+  const { errors, code } = validateSyncFile(raw);
   assert(errors.length > 0);
   assert(errors[0].includes('update the app'));
+  assertEquals(code, 'update-required');
 });
 
 test('validateSyncFile: not valid JSON rejected', () => {
@@ -473,20 +477,33 @@ test('validateSyncFile: oversized note skipped (not rejected)', () => {
 
 // --- unionSyncFiles --------------------------------------------------------
 
-test('unionSyncFiles: merges multiple files, note with higher text stamp wins', () => {
-  const file1 = { notes: [makeNote('n1', 'old', makeStamps(100, 0, 'A'))], versions: [], tombstones: [] };
-  const file2 = { notes: [makeNote('n1', 'new', makeStamps(200, 0, 'A'))], versions: [], tombstones: [] };
-  file2.notes[0].stamps.text = stamp(200, 0, 'A');
+
+test('mergeNotePair: independently unions title from A and text from B', () => {
+  const a = makeNote('n1', 'old', makeStamps(100, 0, 'A'), { title: 'renamed.md' });
+  a.stamps.title = stamp(300, 0, 'A');
+  const b = makeNote('n1', 'new body', makeStamps(100, 0, 'B'));
+  b.stamps.text = stamp(300, 0, 'B');
+  const merged = mergeNotePair(a, b);
+  assertEquals(merged.title, 'renamed.md');
+  assertEquals(merged.text, 'new body');
+});
+
+test('unionSyncFiles: merges duplicate notes per field', () => {
+  const file1 = { notes: [makeNote('n1', 'old', makeStamps(100, 0, 'A'), { title: 'new-title.md' })], versions: [], tombstones: [] };
+  file1.notes[0].stamps.title = stamp(300, 0, 'A');
+  const file2 = { notes: [makeNote('n1', 'new', makeStamps(100, 0, 'B'))], versions: [], tombstones: [] };
+  file2.notes[0].stamps.text = stamp(300, 0, 'B');
   const result = unionSyncFiles([file1, file2]);
   assertEquals(result.notes.length, 1);
+  assertEquals(result.notes[0].title, 'new-title.md');
   assertEquals(result.notes[0].text, 'new');
 });
 
-test('unionSyncFiles: tombstone-vs-note resolved within union', () => {
+test('unionSyncFiles: keeps a divergent note and tombstone for three-way resolution', () => {
   const file1 = { notes: [makeNote('n1', 'text', makeStamps(100, 0, 'A'))], versions: [], tombstones: [] };
   const file2 = { notes: [], versions: [], tombstones: [{ id: 'n1', stamp: stamp(200, 0, 'B') }] };
   const result = unionSyncFiles([file1, file2]);
-  assertEquals(result.notes.length, 0, 'tombstone wins');
+  assertEquals(result.notes.length, 1);
   assertEquals(result.tombstones.length, 1);
 });
 

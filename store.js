@@ -205,8 +205,33 @@ export async function getHLCState() {
   return { w: 0, c: 0, d: deviceId };
 }
 
-export function setHLCState(state) {
-  return setMeta('hlc', { w: state.w, c: state.c, d: state.d });
+
+export async function absorbRemoteStamps(stamps) {
+  if (memoryFallback) return { clockWarning: false };
+  const tx = openTransaction(activeConn(), ['meta'], 'readwrite', { durability: 'strict' });
+  const metaStore = tx.objectStore('meta');
+  const deviceId = await ensureDeviceIdInStore(metaStore);
+  const stored = metaValue(await requestToPromise(metaStore.get('hlc')));
+  const state = stored && Number.isFinite(stored.w) && Number.isFinite(stored.c)
+    ? { w: stored.w, c: stored.c, d: deviceId }
+    : { w: 0, c: 0, d: deviceId };
+  let clockWarning = false;
+  const now = Date.now();
+
+  for (const stamp of stamps) {
+    if (!stamp || !Number.isFinite(stamp.w) || !Number.isFinite(stamp.c)) continue;
+    if (stamp.w - now > 24 * 60 * 60 * 1000) clockWarning = true;
+    if (stamp.w > state.w) {
+      state.w = stamp.w;
+      state.c = stamp.c;
+    } else if (stamp.w === state.w) {
+      state.c = Math.max(state.c, stamp.c);
+    }
+  }
+
+  metaStore.put({ key: 'hlc', value: state });
+  await awaitTransactionComplete(tx);
+  return { clockWarning };
 }
 
 async function mutationStamp(metaStore) {
@@ -293,7 +318,7 @@ export async function createNote() {
   const now = Date.now();
 
   const noteRecord = {
-    id, title: 'Untitled.txt', createdAt: now, updatedAt: now, localRev: 0,
+    id, title: 'Untitled.txt', createdAt: now, updatedAt: now, localRev: 0, noteRev: 1,
     pinned: false, pinKey: 0, isDeleted: 0,
   };
   const draftRecord = { noteId: id, text: '', localRev: 0, savedAt: now, byteLength: 0 };
@@ -409,7 +434,9 @@ async function updateNoteFields(id, fields, stampField) {
   if (!record) throw Object.assign(new Error(`note ${id} not found`), { code: 'not-found' });
   const stamp = await mutationStamp(tx.objectStore('meta'));
   ensureNoteStamps(record, stamp.d)[stampField] = stamp;
+
   Object.assign(record, fields);
+  record.noteRev = (record.noteRev || 0) + 1;
   store.put(record);
   await awaitTransactionComplete(tx);
   emit({ type: 'note-changed', noteId: id });
@@ -453,8 +480,10 @@ export async function restoreNote(id) {
   if (!record) throw Object.assign(new Error(`note ${id} not found`), { code: 'not-found' });
   const stamp = await mutationStamp(tx.objectStore('meta'));
   ensureNoteStamps(record, stamp.d).lifecycle = stamp;
+
   record.isDeleted = 0;
   delete record.deletedAt;
+  record.noteRev = (record.noteRev || 0) + 1;
   noteStore.put(record);
   await awaitTransactionComplete(tx);
   emit({ type: 'note-changed', noteId: id });
@@ -687,8 +716,10 @@ async function runDraftWrite(noteId) {
 
       const stamp = await mutationStamp(tx.objectStore('meta'));
       ensureNoteStamps(noteRecord, stamp.d).text = stamp;
+
       noteRecord.updatedAt = now;
       noteRecord.localRev = rev;
+      noteRecord.noteRev = (noteRecord.noteRev || 0) + 1;
       noteStore.put(noteRecord);
       await awaitTransactionComplete(tx);
 
@@ -747,8 +778,10 @@ async function runDraftWrite(noteId) {
 
             const retryStamp = await mutationStamp(retryTx.objectStore('meta'));
             ensureNoteStamps(retryNoteRecord, retryStamp.d).text = retryStamp;
+
             retryNoteRecord.updatedAt = now;
             retryNoteRecord.localRev = rev;
+            retryNoteRecord.noteRev = (retryNoteRecord.noteRev || 0) + 1;
             retryNoteStore.put(retryNoteRecord);
             await awaitTransactionComplete(retryTx);
 
@@ -1109,8 +1142,10 @@ async function runRestore(id, target, currentRev) {
 
   const restoreStamp = await mutationStamp(tx.objectStore('meta'));
   ensureNoteStamps(noteRecord, restoreStamp.d).text = restoreStamp;
+
   noteRecord.updatedAt = at;
   noteRecord.localRev = nextRev;
+  noteRecord.noteRev = (noteRecord.noteRev || 0) + 1;
   noteStore.put(noteRecord);
 
   await awaitTransactionComplete(tx);
@@ -1275,6 +1310,16 @@ export async function getAllSyncBases() {
   return result;
 }
 
+
+export async function flushAllPending() {
+  if (memoryFallback) return [];
+  const pending = [];
+  for (const [id, rev] of revCounters) {
+    if (rev > (durableRevs.get(id) || 0)) pending.push(flush(id, rev));
+  }
+  return Promise.all(pending);
+}
+
 export async function getAllNotesForSync() {
   if (memoryFallback) return [];
   const tx = openTransaction(activeConn(), ['notes', 'drafts', 'meta'], 'readwrite', { durability: 'strict' });
@@ -1295,8 +1340,9 @@ export async function getAllNotesForSync() {
       id: note.id, title: note.title, text: draft.text,
       createdAt: note.createdAt, updatedAt: note.updatedAt,
       pinned: note.pinKey === 1, isDeleted: note.isDeleted || 0,
+
       deletedAt: note.isDeleted === 1 ? note.deletedAt : null,
-      localRev: draft.localRev, stamps: note.stamps,
+      localRev: draft.localRev, noteRev: note.noteRev || 0, stamps: note.stamps,
     });
   }
   await awaitTransactionComplete(tx);
@@ -1328,12 +1374,9 @@ export async function applyMergePlan(plan) {
     // Hash/dedupe preparation happens while the global lock is held but before
     // the write transaction opens. crypto.subtle resolves on a later task and
     // would otherwise let IndexedDB auto-commit the transaction underneath it.
+
     const existingVersions = await getAllVersionsForSync();
     const identities = new Set(existingVersions.map(versionIdentity));
-    const nextSeqByNote = new Map();
-    for (const version of existingVersions) {
-      nextSeqByNote.set(version.noteId, Math.max(nextSeqByNote.get(version.noteId) || 0, version.seq));
-    }
 
     const tx = openTransaction(activeConn(), ['notes', 'drafts', 'versions', 'meta'], 'readwrite', { durability: 'strict' });
     const notesStore = tx.objectStore('notes');
@@ -1343,22 +1386,32 @@ export async function applyMergePlan(plan) {
     const applied = [];
     const skipped = [];
     const touched = new Set();
+
     const created = new Set();
+    const changes = new Map();
+    const deleted = new Set();
 
     for (const op of plan.noteOps) {
       const currentNote = await requestToPromise(notesStore.get(op.noteId));
       const currentDraft = await requestToPromise(draftsStore.get(op.noteId));
+
       if (
         op.fence
-        && currentDraft
-        && currentDraft.localRev > op.fence.localRev
+        && (
+          !currentDraft
+          || !currentNote
+          || currentDraft.localRev > op.fence.localRev
+          || (currentNote.noteRev || 0) > (op.fence.noteRev || 0)
+        )
       ) {
         skipped.push(op.noteId);
         continue;
       }
 
+
       if (op.action === 'purge') {
         notesStore.delete(op.noteId);
+        deleted.add(op.noteId);
         draftsStore.delete(op.noteId);
         const range = IDBKeyRange.bound([op.noteId, -Infinity], [op.noteId, Infinity]);
         await new Promise((resolve, reject) => {
@@ -1371,12 +1424,16 @@ export async function applyMergePlan(plan) {
           };
           request.onerror = () => reject(request.error);
         });
+
       } else {
         const note = op.note;
         const localRev = currentDraft ? currentDraft.localRev : (note.localRev || 0);
+        const cleanTitle = String(note.title || '').replace(/[/\\\u0000-\u001F]/g, '').trim().slice(0, 200) || 'Untitled.txt';
+        const textChanged = !currentDraft || currentDraft.text !== note.text;
+        changes.set(note.id, { noteId: note.id, textChanged });
         notesStore.put({
-          id: note.id, title: note.title, createdAt: note.createdAt,
-          updatedAt: note.updatedAt, localRev,
+          id: note.id, title: cleanTitle, createdAt: note.createdAt,
+          updatedAt: note.updatedAt, localRev, noteRev: currentNote ? (currentNote.noteRev || 0) : (note.noteRev || 0),
           pinned: Boolean(note.pinned), pinKey: note.pinned ? 1 : 0,
           isDeleted: note.isDeleted || 0,
           ...(note.isDeleted ? { deletedAt: note.deletedAt } : {}),
@@ -1395,13 +1452,28 @@ export async function applyMergePlan(plan) {
       touched.add(op.noteId);
     }
 
+
     const skippedSet = new Set(skipped);
+    const nextSeqByNote = new Map();
+    async function maxSeqFor(noteId) {
+      if (nextSeqByNote.has(noteId)) return nextSeqByNote.get(noteId);
+      const range = IDBKeyRange.bound([noteId, -Infinity], [noteId, Infinity]);
+      const max = await new Promise((resolve, reject) => {
+        const request = versionsStore.openCursor(range, 'prev');
+        request.onsuccess = () => resolve(request.result ? request.result.value.seq : 0);
+        request.onerror = () => reject(request.error);
+      });
+      nextSeqByNote.set(noteId, max);
+      return max;
+    }
+
     for (const version of [...plan.conflictVersions, ...plan.remoteVersionsToImport]) {
       if (skippedSet.has(version.noteId)) continue;
       const identity = versionIdentity(version);
       if (identities.has(identity)) continue;
       identities.add(identity);
-      const seq = (nextSeqByNote.get(version.noteId) || 0) + 1;
+
+      const seq = (await maxSeqFor(version.noteId)) + 1;
       nextSeqByNote.set(version.noteId, seq);
       versionsStore.put({
         ...version, seq,
@@ -1421,9 +1493,13 @@ export async function applyMergePlan(plan) {
 
     await awaitTransactionComplete(tx);
 
-    for (const id of touched) emit({ type: 'note-changed', noteId: id, source: 'sync' });
+
+    for (const id of deleted) emit({ type: 'note-deleted', noteId: id, source: 'sync' });
+    for (const id of touched) {
+      if (!deleted.has(id)) emit({ type: 'note-changed', noteId: id, source: 'sync', textChanged: changes.get(id)?.textChanged || false });
+    }
     if (created.size > 0) emit({ type: 'imported', source: 'sync', noteIds: Array.from(created) });
-    if (touched.size > 0) emit({ type: 'sync-applied', noteIds: Array.from(touched) });
+    if (touched.size > 0) emit({ type: 'sync-applied', changes: Array.from(changes.values()), deletedNoteIds: Array.from(deleted) });
     return { applied, skipped };
   });
 }
@@ -2061,7 +2137,7 @@ function memoryCreateNote() {
   const id = newId();
   const now = Date.now();
   memoryFallback.notes.set(id, {
-    id, title: 'Untitled.txt', createdAt: now, updatedAt: now, localRev: 0,
+    id, title: 'Untitled.txt', createdAt: now, updatedAt: now, localRev: 0, noteRev: 1,
     pinned: false, pinKey: 0, isDeleted: 0,
   });
   memoryFallback.drafts.set(id, { noteId: id, text: '', localRev: 0, savedAt: now, byteLength: 0 });

@@ -108,8 +108,9 @@ import {
   deleteSyncFiles, listLegacyBackups, downloadLegacyBackupText,
 } from './drive-sync.js';
 import {
-  validateSyncFile, computeMergePlan, advanceHLC,
-  legacyStamps, unionSyncFiles, SYNC_FORMAT,
+
+  validateSyncFile, computeMergePlan, computeTextHash,
+  legacyStamps, unionSyncFiles,
 } from './sync-engine.js';
 
 // --- Constants -------------------------------------------------------------
@@ -128,7 +129,9 @@ let lastAutoSyncAt = 0;
 let lastVisibilitySyncAt = 0;
 let statusListeners = new Set();
 let currentStatus = { state: 'idle' };
+
 let unsubscribeStore = null;
+let initialized = false;
 
 // --- Status ----------------------------------------------------------------
 
@@ -148,13 +151,17 @@ export function onSyncStatus(handler) {
 
 // --- Init / Destroy --------------------------------------------------------
 
+
 export function initSync() {
+  if (initialized) return;
   if (store.isMemoryFallback && store.isMemoryFallback()) {
     emitStatus({ state: 'disabled', reason: 'memory-mode' });
     return;
   }
   if (!isConfigured() || !isConnected()) { emitStatus({ state: 'idle' }); return; }
 
+
+  initialized = true;
   unsubscribeStore = store.subscribe((event) => {
     if (event.type === 'sync-dirty') scheduleDirtySync();
   });
@@ -167,15 +174,17 @@ export function initSync() {
   }
 }
 
+
 export function destroySync() {
+  initialized = false;
   if (unsubscribeStore) { unsubscribeStore(); unsubscribeStore = null; }
   document.removeEventListener('visibilitychange', onVisibilityChange);
   window.removeEventListener('online', onOnline);
   if (dirtyTimer) { clearTimeout(dirtyTimer); dirtyTimer = null; }
   syncRunning = false;
   syncScheduled = false;
-  statusListeners = new Set();
-  currentStatus = { state: 'idle' };
+
+  emitStatus({ state: 'idle' });
 }
 
 // --- Triggers --------------------------------------------------------------
@@ -209,7 +218,12 @@ function scheduleDirtySync() {
 
 // --- Coordinator -----------------------------------------------------------
 
+
 export async function syncNow({ silent = false } = {}) {
+  if (store.isMemoryFallback && store.isMemoryFallback()) {
+    emitStatus({ state: 'disabled', reason: 'memory-mode' });
+    return;
+  }
   if (syncRunning) { syncScheduled = true; return; }
   syncRunning = true;
   try {
@@ -230,10 +244,8 @@ async function runSyncCycle({ silent = false }) {
 
   try {
     // ---- Phase 1: Flush [C-15/39] ----
-    const summaries = await store.listNotes({ includeTrashed: true, limit: 100000 });
-    for (const s of summaries) {
-      await store.flush(s.id, s.localRev || 0).catch(() => {});
-    }
+
+    await store.flushAllPending();
     if (store.hasMemoryOnlyNotes && store.hasMemoryOnlyNotes()) {
       emitStatus({ state: 'error', reason: 'memory-pending' });
       return;
@@ -243,26 +255,39 @@ async function runSyncCycle({ silent = false }) {
     // ---- Phase 2: Download [C-22/31/33/41] ----
     let remoteState = null;
     let primaryFile = null;     // { id, headRevisionId } for upload guard
+
     let extraFileIds = [];
+    let skippedNotes = [];
+    let invalidLegacyRecords = 0;
+    let remoteFilePresent = false;
 
     await withToken(async (token) => {
       const syncFiles = await listAllSyncFiles(token);
 
+
       if (syncFiles.length > 0) {
+        remoteFilePresent = true;
         const parsed = [];
+        const validFileIds = new Set();
         for (const file of syncFiles) {
           const raw = await downloadSyncFileText(token, file.id);
-          const { syncFile, skippedNotes, errors } = validateSyncFile(raw);
-          if (errors.length > 0) { console.warn('heldnote: sync file rejected:', errors); continue; }
-          if (syncFile.syncFormat > SYNC_FORMAT) {
-            emitStatus({ state: 'error', reason: 'update-required' });
+          const validation = validateSyncFile(raw);
+          if (validation.code === 'update-required') {
             throw Object.assign(new Error('update required'), { code: 'update-required' });
           }
-          parsed.push(syncFile);
+          if (validation.errors.length > 0) {
+            console.warn('heldnote: sync file rejected:', validation.errors);
+            continue;
+          }
+          skippedNotes.push(...validation.skippedNotes);
+          parsed.push(validation.syncFile);
+          validFileIds.add(file.id);
           if (!primaryFile) primaryFile = file;
         }
         remoteState = parsed.length > 0 ? unionSyncFiles(parsed) : { notes: [], versions: [], tombstones: [] };
-        if (syncFiles.length > 1) extraFileIds = syncFiles.slice(1).map((f) => f.id);
+        extraFileIds = syncFiles
+          .filter((file) => validFileIds.has(file.id) && file.id !== primaryFile?.id)
+          .map((file) => file.id);
       } else {
         // Legacy migration [C-31].
         const legacyFiles = await listLegacyBackups(token);
@@ -272,12 +297,39 @@ async function runSyncCycle({ silent = false }) {
             try {
               const raw = await downloadLegacyBackupText(token, file.id);
               const data = JSON.parse(raw);
+
               if (data && Array.isArray(data.notes)) {
-                legacyParsed.push({
-                  notes: data.notes.map((n) => ({ ...n, stamps: legacyStamps(n.updatedAt), isDeleted: n.deletedAt ? 1 : 0 })),
-                  versions: (data.versions || []).map((v) => ({ ...v, textHash: '' })),
-                  tombstones: [],
-                });
+                const notes = [];
+                for (const note of data.notes) {
+                  const candidate = {
+                    ...note,
+                    stamps: legacyStamps(note.updatedAt),
+                    pinned: note.pinned,
+                    isDeleted: note.deletedAt ? 1 : 0,
+                  };
+                  const checked = validateSyncFile(JSON.stringify({
+                    syncFormat: 2, schemaVersion: 1, notes: [candidate], versions: [], tombstones: [],
+                  }));
+                  if (checked.syncFile) {
+                    notes.push(...checked.syncFile.notes);
+                    skippedNotes.push(...checked.skippedNotes);
+                  } else {
+                    invalidLegacyRecords += 1;
+                  }
+                }
+                const versions = [];
+                for (const version of (Array.isArray(data.versions) ? data.versions : [])) {
+                  const candidate = {
+                    ...version,
+                    textHash: typeof version.textHash === 'string' ? version.textHash : '',
+                  };
+                  const checked = validateSyncFile(JSON.stringify({
+                    syncFormat: 2, schemaVersion: 1, notes: [], versions: [candidate], tombstones: [],
+                  }));
+                  if (checked.syncFile) versions.push(...checked.syncFile.versions);
+                  else invalidLegacyRecords += 1;
+                }
+                legacyParsed.push({ notes, versions, tombstones: [] });
               }
             } catch (e) { console.warn('heldnote: legacy backup parse failed', e); }
           }
@@ -295,22 +347,22 @@ async function runSyncCycle({ silent = false }) {
 
     // ---- Phase 3: Compute (pure) [C-23] ----
     const deviceId = await store.getDeviceId();
-    const hlcState = await store.getHLCState();
+
     const localNotes = await store.getAllNotesForSync();
     const localVersions = await store.getAllVersionsForSync();
     const localTombstones = await store.getAllTombstones();
     const bases = await store.getAllSyncBases();
 
-    // Advance HLC for all remote stamps observed.
+
+    const remoteStamps = [];
     for (const rn of remoteState.notes) {
       for (const f of ['text', 'title', 'pinned', 'lifecycle']) {
-        if (rn.stamps && rn.stamps[f]) advanceHLC(hlcState, rn.stamps[f]);
+        if (rn.stamps && rn.stamps[f]) remoteStamps.push(rn.stamps[f]);
       }
     }
-    for (const rt of remoteState.tombstones) {
-      if (rt.stamp) advanceHLC(hlcState, rt.stamp);
-    }
-    await store.setHLCState(hlcState);
+    for (const rt of remoteState.tombstones) if (rt.stamp) remoteStamps.push(rt.stamp);
+    const absorbed = await store.absorbRemoteStamps(remoteStamps);
+    if (absorbed.clockWarning) await store.setMeta('sync-clock-warning', true);
 
     const plan = await computeMergePlan({
       localNotes, localVersions,
@@ -318,15 +370,34 @@ async function runSyncCycle({ silent = false }) {
       remoteVersions: remoteState.versions,
       localTombstones,
       remoteTombstones: remoteState.tombstones,
-      bases, deviceId,
+
+      bases, deviceId, skippedNotes,
     });
 
-    if (plan.clockWarning) {
-      emitStatus({ state: 'syncing', clockWarning: true });
-    }
+
+    if (plan.clockWarning) await store.setMeta('sync-clock-warning', true);
+    const clockWarning = Boolean(await store.getMeta('sync-clock-warning'));
+    if (clockWarning) emitStatus({ state: 'syncing', clockWarning: true });
 
     // ---- Phase 4: Apply [C-12/13/14/49/51] ----
+
     const applyResult = await store.applyMergePlan(plan);
+    if (applyResult.skipped.length > 0) syncScheduled = true;
+
+    const planIsEmpty = plan.noteOps.length === 0
+      && plan.conflictVersions.length === 0
+      && plan.remoteVersionsToImport.length === 0
+      && plan.tombstoneWrites.length === 0
+      && plan.tombstoneDeletes.length === 0;
+
+    if (planIsEmpty && extraFileIds.length === 0 && remoteFilePresent) {
+      lastAutoSyncAt = Date.now();
+      emitStatus({
+        state: 'synced', at: Date.now(), clockWarning,
+        skippedNotes: skippedNotes.length, invalidLegacyRecords,
+      });
+      return;
+    }
 
     // ---- Phase 5: Upload [C-20/21/52/53] ----
     const blob = new Blob([JSON.stringify(plan.uploadPayload)], { type: 'application/json' });
@@ -344,12 +415,15 @@ async function runSyncCycle({ silent = false }) {
         }, { silent });
         break;
       } catch (e) {
+
         if (e.code === 'revision-mismatch' && uploadAttempts < MAX_UPLOAD_RETRIES) {
-          // Another device synced — re-download and re-merge [C-20].
-          // For simplicity, restart the whole cycle on the next iteration
-          // of syncNow (the retry flag schedules a follow-up).
-          console.warn('heldnote: upload revision mismatch, will retry');
-          continue;
+          // The blob is now stale. A follow-up cycle must return to Download;
+          // resending these bytes could only repeat the same failed comparison.
+          console.warn('heldnote: upload revision mismatch, restarting from download');
+          syncScheduled = true;
+          await store.setMeta('sync-retry-pending', { at: Date.now() });
+          emitStatus({ state: 'retry-pending' });
+          return;
         }
         throw e;
       }
@@ -371,12 +445,20 @@ async function runSyncCycle({ silent = false }) {
 
     // ---- Phase 6: Finalize [C-18/40] ----
     const metaEntries = [];
+
+    const skippedSet = new Set(applyResult.skipped);
     for (const b of plan.newBases) {
-      metaEntries.push({ key: `sync:${b.noteId}`, stamps: b.stamps, textHash: b.textHash });
+      if (!skippedSet.has(b.noteId)) {
+        metaEntries.push({ key: `sync:${b.noteId}`, stamps: b.stamps, textHash: b.textHash });
+      }
     }
     metaEntries.push({ key: 'lastSyncAt', value: Date.now() });
     metaEntries.push({ key: 'headRevisionId', value: uploadResult.headRevisionId });
+
     await store.batchSetMeta(metaEntries);
+    for (const id of plan.baseDeletes) {
+      if (!skippedSet.has(id)) await store.deleteMeta(`sync:${id}`);
+    }
 
     // Clear retry-pending on success.
     await store.deleteMeta('sync-retry-pending').catch(() => {});
@@ -388,7 +470,11 @@ async function runSyncCycle({ silent = false }) {
     }
 
     lastAutoSyncAt = Date.now();
-    emitStatus({ state: 'synced', at: Date.now() });
+
+    emitStatus({
+      state: 'synced', at: Date.now(), clockWarning,
+      skippedNotes: skippedNotes.length, invalidLegacyRecords,
+    });
   } catch (error) {
     if (error.code === 'auth-needed' || error.code === 'auth-expired') {
       emitStatus({ state: 'auth-needed' });

@@ -57,9 +57,11 @@ export function migrateNoteStamps(updatedAt, deviceId) {
   return { text: { ...s }, title: { ...s }, pinned: { ...s }, lifecycle: { ...s } };
 }
 
-// Legacy backup notes get d:'legacy' — always loses to any real device [C-31].
+
+// Legacy backup notes use a sentinel below every UUID-like device id, so an
+// equal-wall legacy value can never outrank a real synchronized mutation.
 export function legacyStamps(updatedAt) {
-  return migrateNoteStamps(updatedAt, 'legacy');
+  return migrateNoteStamps(updatedAt, '0000');
 }
 
 // --- Hashing [C-25] --------------------------------------------------------
@@ -85,7 +87,8 @@ function isValidStamps(stamps) {
     && STAMP_FIELDS.every((f) => isValidStamp(stamps[f]));
 }
 
-function isValidSyncNote(n) {
+
+export function isValidSyncNote(n) {
   return Boolean(n) && typeof n === 'object' && !Array.isArray(n)
     && typeof n.id === 'string' && n.id.length > 0
     && typeof n.title === 'string' && typeof n.text === 'string'
@@ -96,7 +99,8 @@ function isValidSyncNote(n) {
     && isValidStamps(n.stamps);
 }
 
-function isValidSyncVersion(v) {
+
+export function isValidSyncVersion(v) {
   return Boolean(v) && typeof v === 'object' && !Array.isArray(v)
     && typeof v.noteId === 'string' && v.noteId.length > 0
     && isFiniteNumber(v.at) && isFiniteNumber(v.sourceRev)
@@ -137,9 +141,10 @@ export function validateSyncFile(rawText) {
     errors.push('sync file is missing syncFormat');
     return { syncFile: null, skippedNotes, errors };
   }
+
   if (parsed.syncFormat > SYNC_FORMAT) {
     errors.push(`syncFormat ${parsed.syncFormat} is newer than ${SYNC_FORMAT}; update the app`);
-    return { syncFile: null, skippedNotes, errors };
+    return { syncFile: null, skippedNotes, errors, code: 'update-required' };
   }
   if (!Array.isArray(parsed.notes) || !Array.isArray(parsed.versions) || !Array.isArray(parsed.tombstones)) {
     errors.push('sync file is missing notes, versions, or tombstones arrays');
@@ -212,6 +217,7 @@ export function validateSyncFile(rawText) {
 // Returns 'local', 'remote', or 'none'. True conflicts resolve via
 // compareStamps total order — deterministic on every device [C-6].
 
+
 export function mergeField(localStamp, remoteStamp, baseStamp) {
   const lc = baseStamp ? compareStamps(localStamp, baseStamp) > 0 : !!localStamp;
   const rc = baseStamp ? compareStamps(remoteStamp, baseStamp) > 0 : !!remoteStamp;
@@ -221,6 +227,39 @@ export function mergeField(localStamp, remoteStamp, baseStamp) {
   return compareStamps(localStamp, remoteStamp) >= 0 ? 'local' : 'remote';
 }
 
+// Pairwise union uses the same field granularity as the three-way merge. With
+// no base, both records are observations and the higher stamp wins per field.
+export function mergeNotePair(a, b) {
+  if (!a) return b;
+  if (!b) return a;
+
+  const merged = { ...a, stamps: { ...a.stamps } };
+  if (compareStamps(b.stamps.text, a.stamps.text) > 0) {
+    merged.text = b.text;
+    merged.stamps.text = b.stamps.text;
+  }
+  if (compareStamps(b.stamps.title, a.stamps.title) > 0) {
+    merged.title = b.title;
+    merged.stamps.title = b.stamps.title;
+  }
+  if (compareStamps(b.stamps.pinned, a.stamps.pinned) > 0) {
+    merged.pinned = b.pinned;
+    merged.pinKey = b.pinned ? 1 : 0;
+    merged.stamps.pinned = b.stamps.pinned;
+  }
+  if (compareStamps(b.stamps.lifecycle, a.stamps.lifecycle) > 0) {
+    merged.isDeleted = b.isDeleted;
+    merged.deletedAt = b.deletedAt;
+    merged.stamps.lifecycle = b.stamps.lifecycle;
+  }
+
+  const created = [a.createdAt, b.createdAt].filter(Number.isFinite);
+  const updated = [a.updatedAt, b.updatedAt].filter(Number.isFinite);
+  merged.createdAt = created.length ? Math.min(...created) : 0;
+  merged.updatedAt = updated.length ? Math.max(...updated) : 0;
+  return merged;
+}
+
 // --- Merge plan [C-1/2/4/7/8/9/10/11/23/24/25/26/27/36/37/38/47] ----------
 
 function isNewerThanBase(stamp, baseStamp) {
@@ -228,9 +267,11 @@ function isNewerThanBase(stamp, baseStamp) {
   return compareStamps(stamp, baseStamp) > 0;
 }
 
+
 export async function computeMergePlan({
   localNotes, localVersions, remoteNotes, remoteVersions,
   localTombstones, remoteTombstones, bases, deviceId,
+  skippedNotes = [],
 }) {
   const localById = new Map(localNotes.map((n) => [n.id, n]));
   const remoteById = new Map(remoteNotes.map((n) => [n.id, n]));
@@ -241,9 +282,26 @@ export async function computeMergePlan({
   const plan = {
     noteOps: [], conflictVersions: [], remoteVersionsToImport: [],
     tombstoneWrites: [], tombstoneDeletes: [],
-    mergedNotes: [], mergedTombstones: [], newBases: [],
-    clockWarning: false, skippedNotes: [],
+
+    mergedNotes: [], mergedTombstones: [], newBases: [], baseDeletes: [],
+    clockWarning: false, skippedNotes: [...skippedNotes],
   };
+
+
+  // Clock skew is a property of every remote observation, including notes or
+  // tombstones that do not enter the both-sides merge branch.
+  for (const note of remoteNotes) {
+    for (const field of STAMP_FIELDS) {
+      if (note.stamps[field].w - Date.now() > CLOCK_SKEW_THRESHOLD_MS) plan.clockWarning = true;
+    }
+  }
+  for (const tombstone of remoteTombstones) {
+    if (tombstone.stamp.w - Date.now() > CLOCK_SKEW_THRESHOLD_MS) plan.clockWarning = true;
+  }
+
+  const retentionNow = Date.now();
+  const retentionCutoff = retentionNow - LIMITS.PROTECTED_RECENT_MS;
+  const retainedVersion = (v) => v.protectedUntil > retentionNow || v.at >= retentionCutoff;
 
   const localVIds = new Set();
   for (const v of localVersions) localVIds.add(`${v.noteId}\u0000${v.at}\u0000${v.sourceRev}\u0000${v.textHash || ''}`);
@@ -256,18 +314,42 @@ export async function computeMergePlan({
 
   // Helper: import remote versions for a note, deduped by identity.
   function importRemoteVersions(noteId) {
+
     for (const v of (remoteVByNote.get(noteId) || [])) {
+      if (!retainedVersion(v)) continue;
       const k = `${v.noteId}\u0000${v.at}\u0000${v.sourceRev}\u0000${v.textHash}`;
       if (!localVIds.has(k)) { plan.remoteVersionsToImport.push(v); localVIds.add(k); }
     }
   }
 
   for (const id of allIds) {
+
     const local = localById.get(id);
-    const remote = remoteById.get(id);
+    let remote = remoteById.get(id);
     const lt = localTombById.get(id);
-    const rt = remoteTombById.get(id);
+    let rt = remoteTombById.get(id);
     const base = bases instanceof Map ? bases.get(id) : (bases && bases[id]);
+    const bs = base ? base.stamps : null;
+
+    // A multi-file union deliberately keeps a remote note and tombstone for
+    // the same id. Resolve them here, where the three-way base is available.
+    if (remote && rt) {
+      if (compareStamps(rt.stamp, remote.stamps.lifecycle) > 0) {
+        if (isNewerThanBase(remote.stamps.text, bs ? bs.text : null)) {
+          remote = {
+            ...remote,
+            isDeleted: 1,
+            deletedAt: rt.stamp.w,
+            stamps: { ...remote.stamps, lifecycle: rt.stamp },
+          };
+          rt = null;
+        } else {
+          remote = null;
+        }
+      } else {
+        rt = null;
+      }
+    }
 
     // -- Both tombstones, no notes --
     if (lt && rt && !local && !remote) {
@@ -291,7 +373,8 @@ export async function computeMergePlan({
           // Resurrect-as-trash: note survives in Trash, tombstone dropped [C-7].
           const trashed = { ...note, isDeleted: 1, deletedAt: tomb.stamp.w, stamps: { ...note.stamps, lifecycle: tomb.stamp } };
           if (isLocal) {
-            plan.noteOps.push({ noteId: id, fence: { localRev: note.localRev || 0 }, action: 'update', note: trashed });
+
+            plan.noteOps.push({ noteId: id, fence: { localRev: note.localRev || 0, noteRev: note.noteRev || 0 }, action: 'update', note: trashed });
           } else {
             plan.noteOps.push({ noteId: id, fence: null, action: 'create', note: trashed });
             plan.tombstoneDeletes.push(id);
@@ -301,9 +384,11 @@ export async function computeMergePlan({
           plan.newBases.push({ noteId: id, stamps: trashed.stamps, textHash: await computeTextHash(trashed.text) });
         } else {
           // Purge stands.
-          if (isLocal) plan.noteOps.push({ noteId: id, fence: { localRev: note.localRev || 0 }, action: 'purge' });
+
+          if (isLocal) plan.noteOps.push({ noteId: id, fence: { localRev: note.localRev || 0, noteRev: note.noteRev || 0 }, action: 'purge' });
           if (rt && !lt) plan.tombstoneWrites.push(rt);
           plan.mergedTombstones.push(tomb);
+          plan.baseDeletes.push(id);
         }
       } else {
         // Note lifecycle wins → drop tombstone, keep note [C-11].
@@ -333,15 +418,18 @@ export async function computeMergePlan({
     }
 
     // -- Tombstone only on one side --
-    if (lt && !remote && !rt) { plan.mergedTombstones.push(lt); continue; }
-    if (rt && !local && !lt) { plan.tombstoneWrites.push(rt); plan.mergedTombstones.push(rt); continue; }
+
+    if (lt && !remote && !rt) { plan.mergedTombstones.push(lt); plan.baseDeletes.push(id); continue; }
+    if (rt && !local && !lt) {
+      plan.tombstoneWrites.push(rt);
+      plan.mergedTombstones.push(rt);
+      plan.baseDeletes.push(id);
+      continue;
+    }
 
     // -- Both sides have the note → per-field merge --
     if (local && remote) {
       const bs = base ? base.stamps : null;
-      for (const f of STAMP_FIELDS) {
-        if (remote.stamps[f] && remote.stamps[f].w - Date.now() > CLOCK_SKEW_THRESHOLD_MS) plan.clockWarning = true;
-      }
 
       const merged = { ...local };
       const ms = { ...local.stamps };
@@ -390,11 +478,20 @@ export async function computeMergePlan({
       }
 
       merged.stamps = ms;
-      merged.updatedAt = Math.max(local.updatedAt || 0, remote.updatedAt || 0);
-      merged.createdAt = Math.min(local.createdAt || Infinity, remote.createdAt || Infinity);
+
+      const updated = [local.updatedAt, remote.updatedAt].filter(Number.isFinite);
+      const created = [local.createdAt, remote.createdAt].filter(Number.isFinite);
+      merged.updatedAt = updated.length ? Math.max(...updated) : 0;
+      merged.createdAt = created.length ? Math.min(...created) : 0;
 
       const needsUpdate = tr === 'remote' || tir === 'remote' || pr === 'remote' || lr === 'remote' || hasConflict;
-      if (needsUpdate) plan.noteOps.push({ noteId: id, fence: { localRev: local.localRev || 0 }, action: 'update', note: merged });
+
+      if (needsUpdate) plan.noteOps.push({
+        noteId: id,
+        fence: { localRev: local.localRev || 0, noteRev: local.noteRev || 0 },
+        action: 'update',
+        note: merged,
+      });
 
       // Conflict version with deterministic identity [C-26].
       if (hasConflict && loserText !== null) {
@@ -417,11 +514,14 @@ export async function computeMergePlan({
   }
 
   // Build upload payload with all surviving versions (identity-deduped).
-  const surv = new Set(plan.mergedNotes.map((n) => n.id));
+
+  const skippedIds = new Set(plan.skippedNotes.map((entry) => entry.id));
+  const surv = new Set(plan.mergedNotes.filter((n) => !skippedIds.has(n.id)).map((n) => n.id));
   const upIds = new Set();
   const upVersions = [];
   function addV(v) {
-    if (!surv.has(v.noteId)) return;
+
+    if (!surv.has(v.noteId) || !retainedVersion(v)) return;
     const k = `${v.noteId}\u0000${v.at}\u0000${v.sourceRev}\u0000${v.textHash || ''}`;
     if (upIds.has(k)) return;
     upIds.add(k);
@@ -431,7 +531,14 @@ export async function computeMergePlan({
   for (const v of remoteVersions) addV(v);
   for (const v of plan.conflictVersions) addV(v);
 
-  plan.uploadPayload = buildUploadPayload({ notes: plan.mergedNotes, versions: upVersions, tombstones: plan.mergedTombstones, deviceId, schemaVersion: SCHEMA_VERSION });
+
+  plan.uploadPayload = buildUploadPayload({
+    notes: plan.mergedNotes.filter((note) => !skippedIds.has(note.id)),
+    versions: upVersions,
+    tombstones: plan.mergedTombstones,
+    deviceId,
+    schemaVersion: SCHEMA_VERSION,
+  });
   return plan;
 }
 
@@ -453,20 +560,19 @@ export function unionSyncFiles(files) {
   if (files.length === 0) return { notes: [], versions: [], tombstones: [] };
   if (files.length === 1) return { notes: files[0].notes, versions: files[0].versions, tombstones: files[0].tombstones };
 
+
   const notesById = new Map();
   const allV = [];
   const tombsById = new Map();
   for (const f of files) {
-    for (const n of f.notes) { const e = notesById.get(n.id); if (!e || compareStamps(n.stamps.text, e.stamps.text) > 0) notesById.set(n.id, n); }
+    for (const n of f.notes) {
+      notesById.set(n.id, mergeNotePair(notesById.get(n.id), n));
+    }
     allV.push(...f.versions);
-    for (const t of f.tombstones) { const e = tombsById.get(t.id); if (!e || compareStamps(t.stamp, e.stamp) > 0) tombsById.set(t.id, t); }
-  }
-  // Resolve note-vs-tombstone within the union.
-  for (const [tid, tomb] of tombsById) {
-    const note = notesById.get(tid);
-    if (!note) continue;
-    if (compareStamps(tomb.stamp, note.stamps.lifecycle) > 0) notesById.delete(tid);
-    else tombsById.delete(tid);
+    for (const t of f.tombstones) {
+      const existing = tombsById.get(t.id);
+      if (!existing || compareStamps(t.stamp, existing.stamp) > 0) tombsById.set(t.id, t);
+    }
   }
   const vIds = new Set();
   const uV = [];

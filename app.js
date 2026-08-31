@@ -13,7 +13,9 @@ let savedRefreshTimer = null; // debounce for the note-list refresh on 'saved' e
 
 // Set once renderNotesPanel has run, so the note-changed subscriber below
 // (registered before the panel exists) can reach its `refresh()`.
+
 let notesPanelHandle = null;
+let syncNoteDeletedHandler = null;
 
 const STORAGE_REASON_KEYS = {
   blocked: 'error.storageBlocked',
@@ -128,6 +130,10 @@ function renderStatus(event) {
     // connection) — the initial boot-time case is handled directly in boot()
     // before this subscriber even exists.
     addNotice(t(STORAGE_REASON_KEYS[event.reason] || 'error.storageUnavailable'));
+
+  } else if (event.type === 'note-deleted') {
+    if (syncNoteDeletedHandler) syncNoteDeletedHandler(event.noteId);
+    if (notesPanelHandle) notesPanelHandle.refresh();
   } else if (event.type === 'note-changed') {
     // Emitted by setPinned/trashNote/restoreNote/purgeNote/restoreVersion/
     // renameNote. None of those carry enough information here to update the
@@ -394,9 +400,11 @@ async function boot() {
   // Called after a trash purge. Unlike the other note-changed sources,
   // a purge can remove the very note the editor has open, and that is not
   // something a plain list refresh fixes.
+
   function handleNoteDeleted(id) {
     if (id === currentNoteId) closeEditor();
   }
+  syncNoteDeletedHandler = handleNoteDeleted;
 
 
   notesPanelHandle = renderNotesPanel(document.getElementById('notes-panel'), {
@@ -411,11 +419,14 @@ async function boot() {
   // only when that editor's note was actually applied; fence-skipped notes
   // keep the user's newer in-memory view and will be merged next round.
   store.subscribe((event) => {
-    if (
-      event.type === 'sync-applied'
-      && currentNoteId
-      && event.noteIds.includes(currentNoteId)
-    ) {
+
+    if (event.type !== 'sync-applied' || !currentNoteId) return;
+    if ((event.deletedNoteIds || []).includes(currentNoteId)) {
+      handleNoteDeleted(currentNoteId);
+      return;
+    }
+    const change = (event.changes || []).find((entry) => entry.noteId === currentNoteId);
+    if (change && change.textChanged) {
       selectNote(currentNoteId, { switchView: false });
     }
   });

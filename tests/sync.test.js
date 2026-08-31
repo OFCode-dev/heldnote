@@ -52,7 +52,8 @@ test('purgeNote deletes note, draft, and all versions in one transaction', async
 
 // --- Fence-skip behaviour [C-12/13/51] -------------------------------------
 
-test('merge plan fence captures localRev; a note with higher localRev would be skipped', async () => {
+
+test('applyMergePlan skips when the draft revision advanced and returns the skipped id', async () => {
   await store.open({ dbName: `heldnote-sync-test-${Date.now()}` });
   const note = await store.createNote();
   const rev = store.saveDraft(note.id, 'v1');
@@ -82,12 +83,87 @@ test('merge plan fence captures localRev; a note with higher localRev would be s
   const afterEdit = await store.getNote(note.id);
   assert(afterEdit.localRev > op.fence.localRev, 'localRev must have advanced past the fence');
 
-  // Apply would skip this note — the fence check is:
-  //   if (currentLocalRev > fence.localRev) skip
-  // We verify the contract here; actual Apply is in store.applyMergePlan (v2).
-  const shouldSkip = afterEdit.localRev > op.fence.localRev;
-  assert(shouldSkip, 'note must be skipped when its localRev exceeds the fence');
 
+  const result = await store.applyMergePlan(plan);
+  assertEquals(result.skipped, [note.id]);
+  assertEquals((await store.getNote(note.id)).text, 'typed during sync');
+
+  await store.close();
+});
+
+test('applyMergePlan skips a title mutation detected by noteRev', async () => {
+  await store.open({ dbName: `heldnote-sync-test-${Date.now()}` });
+  const note = await store.createNote();
+  const local = (await store.getAllNotesForSync()).find((entry) => entry.id === note.id);
+  const remote = { ...local, title: 'remote.md', stamps: { ...local.stamps, title: stamp(local.updatedAt + 1000, 0, 'B') } };
+  const plan = await computeMergePlan({
+    localNotes: [local], localVersions: [], remoteNotes: [remote], remoteVersions: [],
+    localTombstones: [], remoteTombstones: [], bases: new Map(), deviceId: 'A',
+  });
+  await store.renameNote(note.id, 'local.md');
+  const result = await store.applyMergePlan(plan);
+  assertEquals(result.skipped, [note.id]);
+  assertEquals((await store.getNote(note.id)).title, 'local.md');
+  await store.close();
+});
+
+test('applyMergePlan skips a fenced operation whose draft disappeared', async () => {
+  await store.open({ dbName: `heldnote-sync-test-${Date.now()}` });
+  const note = await store.createNote();
+  const local = (await store.getAllNotesForSync()).find((entry) => entry.id === note.id);
+  const remote = { ...local, text: 'remote', stamps: { ...local.stamps, text: stamp(local.updatedAt + 1000, 0, 'B') } };
+  const plan = await computeMergePlan({
+    localNotes: [local], localVersions: [], remoteNotes: [remote], remoteVersions: [],
+    localTombstones: [], remoteTombstones: [], bases: new Map(), deviceId: 'A',
+  });
+  await store.purgeNote(note.id);
+  const result = await store.applyMergePlan(plan);
+  assertEquals(result.skipped, [note.id]);
+  let code;
+  await store.getNote(note.id).catch((error) => { code = error.code; });
+  assertEquals(code, 'not-found');
+  await store.close();
+});
+
+test('applyMergePlan writes conflict versions and purge emits note-deleted', async () => {
+  await store.open({ dbName: `heldnote-sync-test-${Date.now()}` });
+  const note = await store.createNote();
+  const events = [];
+  const unsubscribe = store.subscribe((event) => events.push(event));
+  const conflict = {
+    noteId: note.id, at: Date.now(), sourceRev: 7,
+    textHash: await computeTextHash('loser'), text: 'loser',
+    kind: 'sync-conflict', protectedUntil: Date.now() + CONFLICT_PROTECTION_MS,
+  };
+  await store.applyMergePlan({
+    noteOps: [], conflictVersions: [conflict], remoteVersionsToImport: [],
+    tombstoneWrites: [], tombstoneDeletes: [],
+  });
+  const versions = await store.listVersions(note.id, {});
+  assert(versions.some((version) => version.kind === 'sync-conflict'));
+
+  const local = (await store.getAllNotesForSync()).find((entry) => entry.id === note.id);
+  await store.applyMergePlan({
+    noteOps: [{ noteId: note.id, fence: { localRev: local.localRev, noteRev: local.noteRev }, action: 'purge' }],
+    conflictVersions: [], remoteVersionsToImport: [],
+    tombstoneWrites: [], tombstoneDeletes: [],
+  });
+  assert(events.some((event) => event.type === 'note-deleted' && event.noteId === note.id));
+  unsubscribe();
+  await store.close();
+});
+
+test('absorbRemoteStamps never rolls the persisted HLC backward', async () => {
+  await store.open({ dbName: `heldnote-sync-test-${Date.now()}` });
+  await store.absorbRemoteStamps([stamp(5000, 9, 'remote')]);
+  await store.absorbRemoteStamps([stamp(4000, 99, 'remote')]);
+  let state = await store.getHLCState();
+  assertEquals(state.w, 5000);
+  assertEquals(state.c, 9);
+  await store.absorbRemoteStamps([stamp(5000, 12, 'remote')]);
+  state = await store.getHLCState();
+  assertEquals(state.w, 5000);
+  assertEquals(state.c, 12);
   await store.close();
 });
 
@@ -286,12 +362,15 @@ test('remote versions are imported with identity dedup against local versions', 
     pinned: false, isDeleted: 0, deletedAt: null, localRev: 1,
     stamps: makeStamps(100, 0, 'A'),
   };
-  const localVersion = { noteId: 'n1', at: 50, sourceRev: 0, textHash: await computeTextHash('old'), text: 'old' };
+  // Versions must sit inside the retention window (fix #11), or the plan
+  // rightly drops them before dedup/upload is even considered.
+  const recentAt = Date.now() - 60_000;
+  const localVersion = { noteId: 'n1', at: recentAt, sourceRev: 0, textHash: await computeTextHash('old'), text: 'old' };
   const remoteNote = { ...localNote, stamps: makeStamps(100, 0, 'A') };
   // Same version identity as local — must be deduped.
   const dupeRemoteVersion = { ...localVersion };
   // Different version — must be imported.
-  const newRemoteVersion = { noteId: 'n1', at: 80, sourceRev: 1, textHash: await computeTextHash('mid'), text: 'mid' };
+  const newRemoteVersion = { noteId: 'n1', at: recentAt + 10_000, sourceRev: 1, textHash: await computeTextHash('mid'), text: 'mid' };
 
   const plan = await computeMergePlan({
     localNotes: [localNote], localVersions: [localVersion], remoteNotes: [remoteNote],
@@ -313,7 +392,8 @@ test('upload payload includes all surviving notes, versions, and tombstones', as
     stamps: makeStamps(100, 0, 'A'),
   };
   const tomb = { id: 'n2', stamp: stamp(200, 0, 'A') };
-  const version = { noteId: 'n1', at: 50, sourceRev: 0, textHash: await computeTextHash('old'), text: 'old' };
+  // Inside the retention window, so the upload payload must carry it.
+  const version = { noteId: 'n1', at: Date.now() - 60_000, sourceRev: 0, textHash: await computeTextHash('old'), text: 'old' };
 
   const plan = await computeMergePlan({
     localNotes: [note1], localVersions: [version], remoteNotes: [],

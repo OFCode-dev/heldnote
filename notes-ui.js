@@ -584,7 +584,10 @@ export function renderNotesPanel(container, { onSelect, onImportComplete, onNote
     function renderConnectionControls() {
       const connected = driveSync.isConnected();
       connectButton.hidden = connected;
-      syncButton.hidden = !connected;
+
+      const memoryMode = store.isMemoryFallback();
+      syncButton.hidden = !connected || memoryMode;
+      syncButton.disabled = memoryMode;
       disconnectButton.hidden = !connected;
     }
 
@@ -599,8 +602,13 @@ export function renderNotesPanel(container, { onSelect, onImportComplete, onNote
         driveStatus.textContent = status.clockWarning
           ? `${t('drive.syncing')} ${t('drive.clockWarning')}`
           : t('drive.syncing');
+
       } else if (status.state === 'synced') {
-        driveStatus.textContent = `${t('drive.synced')} ${new Date(status.at).toLocaleString(getLanguage())}`;
+        const warnings = [];
+        if (status.clockWarning) warnings.push(t('drive.clockWarning'));
+        if (status.skippedNotes) warnings.push(t('drive.syncSkippedNotes').replace('{count}', status.skippedNotes));
+        if (status.invalidLegacyRecords) warnings.push(t('drive.syncInvalidLegacy').replace('{count}', status.invalidLegacyRecords));
+        driveStatus.textContent = `${t('drive.synced')} ${new Date(status.at).toLocaleString(getLanguage())}${warnings.length ? ` · ${warnings.join(' ')}` : ''}`;
       } else if (status.state === 'auth-needed') driveStatus.textContent = t('drive.syncAuthNeeded');
       else if (status.state === 'retry-pending') driveStatus.textContent = t('drive.syncRetry');
       else if (status.state === 'error' && status.reason === 'memory-pending') driveStatus.textContent = t('drive.syncMemoryPending');
@@ -612,7 +620,9 @@ export function renderNotesPanel(container, { onSelect, onImportComplete, onNote
       connectButton.disabled = true;
       driveStatus.textContent = t('drive.connecting');
       try {
+
         await driveSync.connect();
+        sync.initSync();
         renderConnectionControls();
         await sync.syncNow();
       } catch (error) {
@@ -639,7 +649,9 @@ export function renderNotesPanel(container, { onSelect, onImportComplete, onNote
       }
     });
 
+
     disconnectButton.addEventListener('click', () => {
+      sync.destroySync();
       driveSync.disconnect();
       renderSyncStatus({ state: 'idle' });
     });

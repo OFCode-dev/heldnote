@@ -80,7 +80,10 @@ const STRINGS = {
     'drive.syncMemoryPending': 'Unsynced text in memory — check storage',
     'drive.clockWarning': 'Check this device’s clock.',
     'drive.syncUnavailable': 'Sync unavailable in this session.',
+
     'drive.syncUpdateRequired': 'Update Heldnote to continue syncing.',
+    'drive.syncSkippedNotes': '{count} oversized remote note(s) were skipped and left unchanged in Drive.',
+    'drive.syncInvalidLegacy': '{count} invalid legacy backup record(s) were ignored.',
     'drive.syncReady': 'Drive sync is ready.',
     'drive.syncNotConnected': 'Connect Drive to keep notes synchronized across devices.',
     'drive.disconnect': 'Disconnect',
@@ -212,7 +215,10 @@ const STRINGS = {
     'drive.syncMemoryPending': 'Bellekte eşitlenmemiş metin var — depolamayı kontrol edin',
     'drive.clockWarning': 'Bu cihazın saatini kontrol edin.',
     'drive.syncUnavailable': 'Bu oturumda eşitleme kullanılamıyor.',
+
     'drive.syncUpdateRequired': 'Eşitlemeye devam etmek için Heldnote’u güncelleyin.',
+    'drive.syncSkippedNotes': '{count} büyük uzak not atlandı ve Drive’da değiştirilmeden bırakıldı.',
+    'drive.syncInvalidLegacy': '{count} geçersiz eski yedek kaydı yok sayıldı.',
     'drive.syncReady': 'Drive eşitlemesi hazır.',
     'drive.syncNotConnected': 'Notları cihazlar arasında eşitlemek için Drive’ı bağlayın.',
     'drive.disconnect': 'Bağlantıyı kes',
