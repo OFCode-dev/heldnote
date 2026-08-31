@@ -490,6 +490,29 @@ export async function restoreNote(id) {
   emit({ type: 'sync-dirty', noteId: id });
 }
 
+// Purges every note currently in the trash. Deliberately a loop over
+// purgeNote rather than one wide transaction: purgeNote is what writes a
+// note's tombstone in the SAME transaction as its deletion, and that atomicity
+// is the whole reason a purge propagates to other devices instead of the note
+// resurrecting. One failure (a quota fault, a note purged from another tab
+// mid-loop) must not abandon the rest, so failures are collected and the
+// caller is told what actually went; a partial empty is still a correct state.
+export async function emptyTrash() {
+  const all = await listNotes({ includeTrashed: true, limit: 100000 });
+  const trashed = all.filter((note) => note.deletedAt != null);
+  const purged = [];
+  const failed = [];
+  for (const note of trashed) {
+    try {
+      await purgeNote(note.id);
+      purged.push(note.id);
+    } catch (error) {
+      failed.push({ id: note.id, error });
+    }
+  }
+  return { purged, failed };
+}
+
 export async function purgeNote(id) {
   if (memoryFallback) return memoryPurgeNote(id);
 

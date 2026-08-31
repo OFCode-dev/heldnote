@@ -234,6 +234,38 @@ export function renderNotesPanel(container, { onSelect, onImportComplete, onNote
     return li;
   }
 
+  // "Empty trash" is one confirm away from destroying many notes at once, so
+  // the confirmation names the count rather than asking a generic question.
+  function emptyTrashRow(count) {
+    const li = document.createElement('li');
+    li.className = 'note-item trash-empty-all';
+    const button = document.createElement('button');
+    button.className = 'trash-purge';
+    button.textContent = t('trash.emptyAll');
+    button.addEventListener('click', async () => {
+      const question = count === 1
+        ? t('trash.emptyAllConfirmOne')
+        : t('trash.emptyAllConfirm').replace('{count}', String(count));
+      if (!window.confirm(question)) return;
+      button.disabled = true;
+      hideUndo(); // any pending undo points at a note this may have just purged
+      try {
+        const result = await store.emptyTrash();
+        if (onNoteDeleted) for (const id of result.purged) onNoteDeleted(id);
+        if (result.failed.length) {
+          showBackupStatus(t('trash.emptyAllPartial').replace('{count}', String(result.failed.length)));
+        }
+      } catch (error) {
+        showBackupStatus(backupErrorMessage(error, 'trash.emptyAllFailed'));
+      } finally {
+        button.disabled = false;
+        refresh();
+      }
+    });
+    li.appendChild(button);
+    return li;
+  }
+
   function trashRow(note) {
     const li = document.createElement('li');
     li.className = 'note-item trash-row';
@@ -334,6 +366,7 @@ export function renderNotesPanel(container, { onSelect, onImportComplete, onNote
         }));
         return;
       }
+      list.appendChild(emptyTrashRow(visible.length));
       for (const note of visible) list.appendChild(trashRow(note));
       return;
     }

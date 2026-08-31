@@ -1492,3 +1492,45 @@ test('memory mode: renameNote parity — persists, validates, and survives draft
 
   await store.close();
 });
+
+test('emptyTrash purges every trashed note and leaves live notes alone', async () => {
+  await store.open({ dbName: `heldnote-test-${Date.now()}` });
+
+  const keep = await store.createNote();
+  await store.renameNote(keep.id, 'keep.txt');
+  const a = await store.createNote();
+  const b = await store.createNote();
+  await store.flush(a.id, store.saveDraft(a.id, 'first trashed'));
+  await store.flush(b.id, store.saveDraft(b.id, 'second trashed'));
+  await store.trashNote(a.id);
+  await store.trashNote(b.id);
+
+  const result = await store.emptyTrash();
+  assertEquals(result.purged.length, 2, 'both trashed notes should be purged');
+  assertEquals(result.failed.length, 0, 'no failures expected');
+
+  const remaining = await store.listNotes({ includeTrashed: true });
+  assertEquals(remaining.length, 1, 'only the live note should remain');
+  assertEquals(remaining[0].id, keep.id);
+
+  // The tombstones are what make an emptied trash propagate to other devices
+  // instead of the notes coming back on the next sync.
+  const tombstones = await store.getAllTombstones();
+  const ids = tombstones.map((entry) => entry.id);
+  assert(ids.includes(a.id) && ids.includes(b.id), 'a tombstone per purged note');
+  assert(!ids.includes(keep.id), 'the live note must not get a tombstone');
+
+  await store.close();
+});
+
+test('emptyTrash on an empty trash is a no-op', async () => {
+  await store.open({ dbName: `heldnote-test-${Date.now()}` });
+  const live = await store.createNote();
+  const result = await store.emptyTrash();
+  assertEquals(result.purged.length, 0);
+  assertEquals(result.failed.length, 0);
+  assertEquals((await store.listNotes({ includeTrashed: true })).length, 1);
+  assertEquals((await store.getAllTombstones()).length, 0);
+  assert(await store.getNote(live.id), 'the live note is untouched');
+  await store.close();
+});
