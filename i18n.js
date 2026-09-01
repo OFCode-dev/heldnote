@@ -87,8 +87,10 @@ const STRINGS = {
     'drive.syncUnavailable': 'Sync unavailable in this session.',
 
     'drive.syncUpdateRequired': 'Update Heldnote to continue syncing.',
+    'drive.syncTooLarge': 'Sync is paused: the library is larger than Drive sync can carry. Deleting old notes or emptying the trash will resume it.',
     'drive.syncSkippedNotes': '{count} oversized remote note(s) were skipped and left unchanged in Drive.',
     'drive.syncInvalidLegacy': '{count} invalid legacy backup record(s) were ignored.',
+    'drive.syncRejectedFiles': '{count} Drive sync file(s) could not be read and were left untouched.',
     'drive.syncReady': 'Drive sync is ready.',
     'drive.syncNotConnected': 'Connect Drive to keep notes synchronized across devices.',
     'drive.disconnect': 'Disconnect',
@@ -227,8 +229,10 @@ const STRINGS = {
     'drive.syncUnavailable': 'Bu oturumda eşitleme kullanılamıyor.',
 
     'drive.syncUpdateRequired': 'Eşitlemeye devam etmek için Heldnote’u güncelleyin.',
+    'drive.syncTooLarge': 'Senkronizasyon duraklatıldı: kitaplık, Drive senkronunun taşıyabileceğinden büyük. Eski notları silmek veya çöp kutusunu boşaltmak senkronu kaldığı yerden sürdürür.',
     'drive.syncSkippedNotes': '{count} büyük uzak not atlandı ve Drive’da değiştirilmeden bırakıldı.',
     'drive.syncInvalidLegacy': '{count} geçersiz eski yedek kaydı yok sayıldı.',
+    'drive.syncRejectedFiles': '{count} Drive eşitleme dosyası okunamadı ve olduğu gibi bırakıldı.',
     'drive.syncReady': 'Drive eşitlemesi hazır.',
     'drive.syncNotConnected': 'Notları cihazlar arasında eşitlemek için Drive’ı bağlayın.',
     'drive.disconnect': 'Bağlantıyı kes',

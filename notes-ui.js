@@ -641,11 +641,13 @@ export function renderNotesPanel(container, { onSelect, onImportComplete, onNote
         if (status.clockWarning) warnings.push(t('drive.clockWarning'));
         if (status.skippedNotes) warnings.push(t('drive.syncSkippedNotes').replace('{count}', status.skippedNotes));
         if (status.invalidLegacyRecords) warnings.push(t('drive.syncInvalidLegacy').replace('{count}', status.invalidLegacyRecords));
+        if (status.rejectedFiles) warnings.push(t('drive.syncRejectedFiles').replace('{count}', status.rejectedFiles));
         driveStatus.textContent = `${t('drive.synced')} ${new Date(status.at).toLocaleString(getLanguage())}${warnings.length ? ` · ${warnings.join(' ')}` : ''}`;
       } else if (status.state === 'auth-needed') driveStatus.textContent = t('drive.syncAuthNeeded');
       else if (status.state === 'retry-pending') driveStatus.textContent = t('drive.syncRetry');
       else if (status.state === 'error' && status.reason === 'memory-pending') driveStatus.textContent = t('drive.syncMemoryPending');
       else if (status.state === 'error' && status.reason === 'update-required') driveStatus.textContent = t('drive.syncUpdateRequired');
+      else if (status.state === 'error' && status.reason === 'payload-too-large') driveStatus.textContent = t('drive.syncTooLarge');
       else driveStatus.textContent = t('drive.syncReady');
     }
 

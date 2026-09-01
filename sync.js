@@ -110,8 +110,27 @@ import {
 import {
 
   validateSyncFile, computeMergePlan, computeTextHash,
-  legacyStamps, unionSyncFiles,
+  legacyStamps, unionSyncFiles, syncStateSignature, getMaxSyncFileBytes,
 } from './sync-engine.js';
+
+// --- Drive transport seam --------------------------------------------------
+//
+// The coordinator reaches Drive only through drive(). This exists for the same
+// reason db.js's fault-injection seam does: every interesting coordinator
+// behaviour — a rejected remote file, an upload that must or must not happen,
+// a revision mismatch, a legacy migration — is defined entirely by what the
+// transport returns, and none of it is reachable from a test that can only
+// talk to real Drive. drive-sync.js had no tests at all before this seam.
+// Production always uses realTransport; only tests replace it.
+const realTransport = {
+  withToken, listAllSyncFiles, downloadSyncFileText,
+  uploadSyncFile, deleteSyncFiles, listLegacyBackups, downloadLegacyBackupText,
+};
+let transportOverride = null;
+function drive() { return transportOverride || realTransport; }
+
+export function setSyncTransportForTests(transport) { transportOverride = transport; }
+export function clearSyncTransportForTests() { transportOverride = null; }
 
 // --- Constants -------------------------------------------------------------
 
@@ -259,24 +278,40 @@ async function runSyncCycle({ silent = false }) {
     let extraFileIds = [];
     let skippedNotes = [];
     let invalidLegacyRecords = 0;
+    let rejectedFiles = 0;
     let remoteFilePresent = false;
 
-    await withToken(async (token) => {
-      const syncFiles = await listAllSyncFiles(token);
+    await drive().withToken(async (token) => {
+      // withToken re-runs this entire callback after refreshing an expired
+      // token, so everything it accumulates must be reset here rather than at
+      // declaration — otherwise a partial first pass is added to a complete
+      // second one and the user is told about twice as many rejected files
+      // and skipped notes as exist.
+      skippedNotes = [];
+      invalidLegacyRecords = 0;
+      rejectedFiles = 0;
+      remoteFilePresent = false;
+      primaryFile = null;
+      extraFileIds = [];
+
+      const syncFiles = await drive().listAllSyncFiles(token);
 
 
       if (syncFiles.length > 0) {
-        remoteFilePresent = true;
         const parsed = [];
         const validFileIds = new Set();
         for (const file of syncFiles) {
-          const raw = await downloadSyncFileText(token, file.id);
+          const raw = await drive().downloadSyncFileText(token, file.id);
           const validation = validateSyncFile(raw);
           if (validation.code === 'update-required') {
             throw Object.assign(new Error('update required'), { code: 'update-required' });
           }
           if (validation.errors.length > 0) {
+            // Counted, not just logged [D6b]: a rejected remote file is a
+            // fact the user is entitled to, and it is the difference between
+            // "your devices agree" and "one of them is holding garbage".
             console.warn('heldnote: sync file rejected:', validation.errors);
+            rejectedFiles += 1;
             continue;
           }
           skippedNotes.push(...validation.skippedNotes);
@@ -284,18 +319,23 @@ async function runSyncCycle({ silent = false }) {
           validFileIds.add(file.id);
           if (!primaryFile) primaryFile = file;
         }
+        // remoteFilePresent means "a VALID remote sync file was read", never
+        // "some file exists" [D6]. Setting it from syncFiles.length let a
+        // directory of unparseable garbage stand in for a synchronized
+        // remote, which then satisfied the skip-upload gate below.
+        remoteFilePresent = parsed.length > 0;
         remoteState = parsed.length > 0 ? unionSyncFiles(parsed) : { notes: [], versions: [], tombstones: [] };
         extraFileIds = syncFiles
           .filter((file) => validFileIds.has(file.id) && file.id !== primaryFile?.id)
           .map((file) => file.id);
       } else {
         // Legacy migration [C-31].
-        const legacyFiles = await listLegacyBackups(token);
+        const legacyFiles = await drive().listLegacyBackups(token);
         if (legacyFiles.length > 0) {
           const legacyParsed = [];
           for (const file of legacyFiles) {
             try {
-              const raw = await downloadLegacyBackupText(token, file.id);
+              const raw = await drive().downloadLegacyBackupText(token, file.id);
               const data = JSON.parse(raw);
 
               if (data && Array.isArray(data.notes)) {
@@ -384,31 +424,131 @@ async function runSyncCycle({ silent = false }) {
     const applyResult = await store.applyMergePlan(plan);
     if (applyResult.skipped.length > 0) syncScheduled = true;
 
-    const planIsEmpty = plan.noteOps.length === 0
-      && plan.conflictVersions.length === 0
-      && plan.remoteVersionsToImport.length === 0
-      && plan.tombstoneWrites.length === 0
-      && plan.tombstoneDeletes.length === 0;
+    // Finalize runs on BOTH exits below — after an upload, and after finding
+    // the remote already holds the intended state. Both outcomes agree on the
+    // same merged state, so both must record it as the new base.
+    //
+    // Getting this wrong is subtle and expensive: a pure-download cycle (the
+    // most common cycle in a two-device product) ends with content matching,
+    // so it takes the no-upload exit. If that exit skipped finalize, the
+    // downloaded note would carry no sync base — and isNewerThanBase treats a
+    // null base as "changed", on both sides. The next edit on the other device
+    // would then fabricate a protected sync-conflict version here, for a note
+    // this user never touched, and push it everywhere.
+    const skippedSet = new Set(applyResult.skipped);
+    // A validation-skipped (oversized) remote note has NO readable remote
+    // copy agreeing with anything, so its base must not move: advancing it
+    // from the local-only branch would let a later valid remote replacement
+    // overwrite an unsent local edit without a conflict version
+    // [final review #2]. Applies to base deletions too.
+    for (const s of plan.skippedNotes) skippedSet.add(s.id);
+    async function finalize(extraEntries = [], { basesFrom = 'merged' } = {}) {
+      const metaEntries = [...extraEntries];
+      if (basesFrom === 'remote') {
+        // Size-failure path: the upload did NOT happen, so a base may only
+        // record what the remote provably holds. Writing the merged stamps
+        // would mark a never-uploaded local edit as agreed, and the next
+        // remote edit would overwrite it with no conflict version
+        // [final review #1]. Remote-confirmed bases keep divergence
+        // detection alive AND keep freshly downloaded notes based.
+        for (const n of plan.remoteCanonical.notes) {
+          if (skippedSet.has(n.id)) continue;
+          metaEntries.push({ key: `sync:${n.id}`, stamps: n.stamps, textHash: await computeTextHash(n.text ?? '') });
+        }
+      } else {
+        for (const b of plan.newBases) {
+          if (!skippedSet.has(b.noteId)) {
+            metaEntries.push({ key: `sync:${b.noteId}`, stamps: b.stamps, textHash: b.textHash });
+          }
+        }
+      }
+      metaEntries.push({ key: 'lastSyncAt', value: Date.now() });
+      await store.batchSetMeta(metaEntries);
+      if (basesFrom !== 'remote') {
+        // A base deletion encodes a tombstone the remote has agreed to.
+        // Without an upload the remote confirmed nothing - delete none.
+        for (const id of plan.baseDeletes) {
+          if (!skippedSet.has(id)) await store.deleteMeta(`sync:${id}`);
+        }
+      }
+      // The condition that set retry-pending no longer holds. Leaving it set
+      // makes every future 'online' event fire a cycle that can never clear it.
+      await store.deleteMeta('sync-retry-pending').catch(() => {});
+      // If dirtyGen advanced during this run, schedule another pass [C-40].
+      const currentDirtyGen = (await store.getMeta('dirtyGen')) || 0;
+      if (currentDirtyGen !== dirtyGenAtStart) syncScheduled = true;
+    }
 
-    if (planIsEmpty && extraFileIds.length === 0 && remoteFilePresent) {
+    // ---- Upload decision [D6] ----
+    //
+    // "Synced" may mean exactly two things: the remote already holds the
+    // state we intend it to hold, or the upload below succeeded. Nothing else.
+    //
+    // This used to be decided by counting operations to apply LOCALLY
+    // (plan.noteOps and friends). That answers a different question. A device
+    // that edited while the remote stood still has nothing to apply locally
+    // and every reason to upload, so the gate fired on the single most common
+    // case in the product: edit on your laptop, watch it go green, and the
+    // text never leaves the machine. No base advanced either, so it repeated
+    // forever. Compare content instead — it cannot drift from what a user
+    // means by "synced".
+    // Both sides of this comparison pass through the SAME canonical
+    // transform (retention filter + oversized-note exclusion), built by
+    // computeMergePlan as plan.remoteCanonical. Signing the raw remote here
+    // instead made retention trimming look like a content difference: a
+    // remote file with >50 versions on a note re-uploaded on every quiet
+    // cycle, and two devices with skewed clocks could ping-pong rewrites
+    // forever [D6 review C2]. Extra remote history the filter hides simply
+    // stays in the file until a real change uploads.
+    const intendedSignature = await syncStateSignature(plan.uploadPayload);
+    const remoteSignature = await syncStateSignature(plan.remoteCanonical);
+    const remoteMatchesIntended = remoteFilePresent && intendedSignature === remoteSignature;
+
+    if (remoteMatchesIntended && extraFileIds.length === 0) {
+      // The only path allowed to claim 'synced' without uploading. It still
+      // finalizes — the remote provably holds the intended state, so that is
+      // the agreed base.
+      await finalize();
       lastAutoSyncAt = Date.now();
       emitStatus({
         state: 'synced', at: Date.now(), clockWarning,
-        skippedNotes: skippedNotes.length, invalidLegacyRecords,
+        skippedNotes: skippedNotes.length, invalidLegacyRecords, rejectedFiles,
       });
       return;
     }
 
     // ---- Phase 5: Upload [C-20/21/52/53] ----
-    const blob = new Blob([JSON.stringify(plan.uploadPayload)], { type: 'application/json' });
+    //
+    // Size guard [D6 review C3]: never upload a file that validateSyncFile
+    // would reject on the next cycle - that would be a self-inflicted
+    // corrupt remote, re-written on every cycle, that every device then
+    // refuses to read. Measured on the EXACT serialized text that would be
+    // uploaded, with the same byte accounting the validator uses. On
+    // failure: no upload at all (so the loop is bounded - each cycle costs
+    // one local computation and zero network writes), no 'synced' claim, a
+    // durable actionable status, and everything local stays exactly as the
+    // apply phase left it. Finalize still runs: bases record the merge that
+    // DID happen locally, and the upload-needed decision is content-based
+    // (above), so advancing bases cannot mask the pending upload - while
+    // skipping finalize would leave downloaded notes baseless and fabricate
+    // sync-conflict versions later, the exact regression the D6 review
+    // caught once already.
+    const rawPayloadText = JSON.stringify(plan.uploadPayload);
+    const payloadBytes = new TextEncoder().encode(rawPayloadText).length;
+    if (payloadBytes > getMaxSyncFileBytes()) {
+      await finalize([], { basesFrom: 'remote' });
+      emitStatus({ state: 'error', reason: 'payload-too-large', bytes: payloadBytes });
+      return;
+    }
+    const blob = new Blob([rawPayloadText], { type: 'application/json' });
     let uploadResult = null;
     let uploadAttempts = 0;
 
     while (uploadAttempts < MAX_UPLOAD_RETRIES) {
       uploadAttempts += 1;
       try {
-        uploadResult = await withToken(async (token) => {
-          return uploadSyncFile(token, blob, {
+        uploadResult = await drive().withToken(async (token) => {
+          return drive().uploadSyncFile(token, blob, {
             existingFileId: primaryFile ? primaryFile.id : null,
             knownHeadRevisionId: primaryFile ? primaryFile.headRevisionId : null,
           });
@@ -438,48 +578,35 @@ async function runSyncCycle({ silent = false }) {
 
     // Clean up extra sync files only after a successful upload [C-33].
     if (extraFileIds.length > 0) {
-      await withToken(async (token) => {
-        await deleteSyncFiles(token, extraFileIds).catch(() => {});
+      await drive().withToken(async (token) => {
+        await drive().deleteSyncFiles(token, extraFileIds).catch(() => {});
       }, { silent }).catch(() => {});
     }
 
     // ---- Phase 6: Finalize [C-18/40] ----
-    const metaEntries = [];
-
-    const skippedSet = new Set(applyResult.skipped);
-    for (const b of plan.newBases) {
-      if (!skippedSet.has(b.noteId)) {
-        metaEntries.push({ key: `sync:${b.noteId}`, stamps: b.stamps, textHash: b.textHash });
-      }
-    }
-    metaEntries.push({ key: 'lastSyncAt', value: Date.now() });
-    metaEntries.push({ key: 'headRevisionId', value: uploadResult.headRevisionId });
-
-    await store.batchSetMeta(metaEntries);
-    for (const id of plan.baseDeletes) {
-      if (!skippedSet.has(id)) await store.deleteMeta(`sync:${id}`);
-    }
-
-    // Clear retry-pending on success.
-    await store.deleteMeta('sync-retry-pending').catch(() => {});
-
-    // If dirtyGen advanced during this run, schedule another pass [C-40].
-    const currentDirtyGen = (await store.getMeta('dirtyGen')) || 0;
-    if (currentDirtyGen !== dirtyGenAtStart) {
-      syncScheduled = true;
-    }
+    // headRevisionId is the only upload-specific entry; everything else is
+    // shared with the no-upload exit above.
+    await finalize([{ key: 'headRevisionId', value: uploadResult.headRevisionId }]);
 
     lastAutoSyncAt = Date.now();
 
     emitStatus({
       state: 'synced', at: Date.now(), clockWarning,
-      skippedNotes: skippedNotes.length, invalidLegacyRecords,
+      skippedNotes: skippedNotes.length, invalidLegacyRecords, rejectedFiles,
     });
   } catch (error) {
     if (error.code === 'auth-needed' || error.code === 'auth-expired') {
+      // Terminal for this trigger set: reconnecting provides its own
+      // trigger, so a leftover retry marker would re-run a cycle that
+      // cannot proceed on every 'online' event [final review #3].
+      try { await store.deleteMeta('sync-retry-pending'); } catch (_) { /* best effort */ }
       emitStatus({ state: 'auth-needed' });
     } else if (error.code === 'update-required') {
-      // Already handled above; status already set.
+      try { await store.deleteMeta('sync-retry-pending'); } catch (_) { /* best effort */ }
+      // The comment here used to read "status already set" — nothing set it,
+      // so the panel stayed on "Syncing…" forever while notes-ui.js already
+      // had a translated string waiting for this exact shape.
+      emitStatus({ state: 'error', reason: 'update-required' });
     } else {
       console.error('heldnote: sync failed', error);
       try { await store.setMeta('sync-retry-pending', { at: Date.now() }); } catch (_) {}

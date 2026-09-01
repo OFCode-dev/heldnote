@@ -14,6 +14,15 @@ export const SCHEMA_VERSION = 1;
 export const CLOCK_SKEW_THRESHOLD_MS = 24 * 60 * 60 * 1000;
 export const CONFLICT_PROTECTION_MS = 7 * 24 * 60 * 60 * 1000;
 export const MAX_SYNC_FILE_BYTES = 50 * 1024 * 1024;
+
+// The active limit is indirected so tests can exercise the pre-upload guard
+// and the download-side validator against the SAME number without waiting on
+// a 50MB fixture. Production never calls the setter.
+let activeMaxSyncFileBytes = MAX_SYNC_FILE_BYTES;
+export function getMaxSyncFileBytes() { return activeMaxSyncFileBytes; }
+export function setMaxSyncFileBytesForTests(value) {
+  activeMaxSyncFileBytes = Number.isFinite(value) ? value : MAX_SYNC_FILE_BYTES;
+}
 export const STAMP_FIELDS = ['text', 'title', 'pinned', 'lifecycle'];
 
 // --- HLC stamps [C-3/5/6] -------------------------------------------------
@@ -122,8 +131,8 @@ export function validateSyncFile(rawText) {
   const skippedNotes = [];
 
   const byteLen = new TextEncoder().encode(rawText).length;
-  if (byteLen > MAX_SYNC_FILE_BYTES) {
-    errors.push(`sync file is ${byteLen} bytes, over ${MAX_SYNC_FILE_BYTES}-byte limit`);
+  if (byteLen > activeMaxSyncFileBytes) {
+    errors.push(`sync file is ${byteLen} bytes, over ${activeMaxSyncFileBytes}-byte limit`);
     return { syncFile: null, skippedNotes, errors };
   }
 
@@ -299,6 +308,24 @@ export async function computeMergePlan({
     if (tombstone.stamp.w - Date.now() > CLOCK_SKEW_THRESHOLD_MS) plan.clockWarning = true;
   }
 
+  // One version, one identity. The store fills a blank textHash on read
+  // (getAllVersionsForSync), but a sync file may carry '' for the very same
+  // version - legacy candidates and older uploads do. Left unnormalized, the
+  // same version walks around under two identities: import dedupe misses and
+  // the library re-imports its own history every cycle, the retention window
+  // double-counts, and the upload gate compares different vocabularies
+  // [D6 review C2, found by the quiet-cycle regression test]. Normalize once,
+  // here, on copies - every key built below inherits consistency from this.
+  async function withCanonicalHashes(versions) {
+    const out = [];
+    for (const v of versions) {
+      out.push(v.textHash ? v : { ...v, textHash: await computeTextHash(v.text ?? '') });
+    }
+    return out;
+  }
+  remoteVersions = await withCanonicalHashes(remoteVersions);
+  localVersions = await withCanonicalHashes(localVersions);
+
   const retentionNow = Date.now();
   const retentionCutoff = retentionNow - LIMITS.PROTECTED_RECENT_MS;
   // Mirrors pruneNote's protection rule: a version travels in the sync file
@@ -318,12 +345,21 @@ export async function computeMergePlan({
     const keep = new Set();
     for (const list of byNote.values()) {
       list.sort((a, b) => (b.at - a.at) || ((b.sourceRev || 0) - (a.sourceRev || 0)));
-      list.forEach((v, index) => {
+      // Count DISTINCT versions, not array entries: in steady state the
+      // combined local+remote input holds two copies of nearly every
+      // version, and counting copies silently halved the travel window.
+      const seen = new Set();
+      let index = 0;
+      for (const v of list) {
+        const k = versionKey(v);
+        if (seen.has(k)) continue;
+        seen.add(k);
         if (index === 0
             || index < LIMITS.PROTECTED_RECENT_COUNT
             || v.at >= retentionCutoff
-            || v.protectedUntil > retentionNow) keep.add(versionKey(v));
-      });
+            || v.protectedUntil > retentionNow) keep.add(k);
+        index += 1;
+      }
     }
     return keep;
   }
@@ -549,6 +585,23 @@ export async function computeMergePlan({
   // conflict versions compete for the same newest-N slots, exactly as they
   // would after being merged into one store.
   const retainedUpload = buildRetainedSet([...localVersions, ...remoteVersions, ...plan.conflictVersions]);
+  // The upload gate in sync.js compares the intended payload against the
+  // remote state. Those two are only comparable after the SAME canonical
+  // transform: the intended side is retention-filtered and skips oversized
+  // notes, so the remote side must be filtered identically — with this very
+  // retainedUpload set and this very skippedIds set — or the comparison is
+  // between different vocabularies. Comparing filtered-intended against the
+  // raw remote made every quiet cycle look like a needed upload whenever the
+  // remote file carried more history than retention keeps (>50 versions on a
+  // note, or two devices with skewed clocks), which is a rewrite at best and
+  // an inter-device ping-pong at worst [D6 review C2]. Versions the filter
+  // hides from the comparison stay in the remote file untouched until a REAL
+  // change uploads; deliberately no upload happens just to trim them.
+  plan.remoteCanonical = {
+    notes: remoteNotes.filter((n) => !skippedIds.has(n.id)),
+    versions: remoteVersions.filter((v) => !skippedIds.has(v.noteId) && retainedUpload.has(versionKey(v))),
+    tombstones: remoteTombstones,
+  };
   function addV(v) {
 
     if (!surv.has(v.noteId) || !retainedUpload.has(versionKey(v))) return;
@@ -582,6 +635,64 @@ export function buildUploadPayload({ notes, versions, tombstones, deviceId, sche
     versions: versions.map((v) => ({ noteId: v.noteId, at: v.at, sourceRev: v.sourceRev, textHash: v.textHash, text: v.text, ...(v.kind ? { kind: v.kind } : {}), ...(v.protectedUntil !== undefined ? { protectedUntil: v.protectedUntil } : {}) })),
     tombstones: tombstones.map((t) => ({ id: t.id, stamp: t.stamp })),
   };
+}
+
+// --- Content signature [D6] ------------------------------------------------
+//
+// A canonical fingerprint of sync-file CONTENT, used by the coordinator to
+// decide whether an upload is actually needed. It answers exactly one
+// question: "does the remote already hold the state we intend it to hold?"
+//
+// The coordinator used to answer that by counting operations to apply
+// LOCALLY, which is a different question and gets the common case wrong — a
+// device that edits offline has no local ops to apply and every reason to
+// upload. Comparing content is the only formulation that cannot drift from
+// what "synced" means to a user.
+//
+// writerDeviceId and writtenAt are excluded on purpose: SYNC-SPEC marks them
+// diagnostic-only, and writtenAt is Date.now() at build time, so including
+// either would make every payload unique and defeat the comparison entirely.
+export async function syncStateSignature({ notes = [], versions = [], tombstones = [] } = {}) {
+  const stampKey = (s) => (s ? `${s.w}.${s.c}.${s.d}` : '-');
+  const stampsKey = (st) => ['text', 'title', 'pinned', 'lifecycle']
+    .map((f) => stampKey(st && st[f])).join('|');
+
+  const noteRows = notes.map((n) => [
+    n.id,
+    n.title ?? '',
+    n.text ?? '',
+    Number.isFinite(n.createdAt) ? n.createdAt : 0,
+    Number.isFinite(n.updatedAt) ? n.updatedAt : 0,
+    (typeof n.pinned === 'boolean' ? n.pinned : n.pinKey === 1) ? 1 : 0,
+    n.isDeleted ? 1 : 0,
+    Number.isFinite(n.deletedAt) ? n.deletedAt : null,
+    stampsKey(n.stamps),
+  ]).sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
+
+  const versionRows = versions.map((v) => [
+    v.noteId,
+    Number.isFinite(v.at) ? v.at : 0,
+    Number.isFinite(v.sourceRev) ? v.sourceRev : 0,
+    v.textHash || '',
+    // The text itself, not just its hash: the format permits an empty
+    // textHash and the legacy migration path manufactures exactly that
+    // (sync.js builds candidates with textHash: ''). Trusting the field would
+    // let two devices hold different history text under one signature.
+    v.text ?? '',
+    v.kind || '',
+    Number.isFinite(v.protectedUntil) ? v.protectedUntil : null,
+  ]).sort((a, b) => {
+    for (let i = 0; i < 4; i += 1) {
+      if (a[i] < b[i]) return -1;
+      if (a[i] > b[i]) return 1;
+    }
+    return 0;
+  });
+
+  const tombstoneRows = tombstones.map((t) => [t.id, stampKey(t.stamp)])
+    .sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
+
+  return computeTextHash(JSON.stringify({ n: noteRows, v: versionRows, t: tombstoneRows }));
 }
 
 // --- Multi-file union [C-22/33] --------------------------------------------

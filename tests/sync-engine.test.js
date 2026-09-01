@@ -3,7 +3,7 @@ import {
   compareStamps, createStamp, advanceHLC, migrateNoteStamps, legacyStamps,
   mergeField, computeMergePlan, computeTextHash, validateSyncFile,
 
-  buildUploadPayload, unionSyncFiles, mergeNotePair,
+  buildUploadPayload, unionSyncFiles, mergeNotePair, syncStateSignature,
   SYNC_FORMAT, CONFLICT_PROTECTION_MS, CLOCK_SKEW_THRESHOLD_MS, STAMP_FIELDS,
 } from '../sync-engine.js';
 
@@ -590,4 +590,67 @@ test('beyond the count window, old unprotected versions are dropped from upload'
   });
   assertEquals(plan.uploadPayload.versions.length, 50,
     'only the newest PROTECTED_RECENT_COUNT old versions travel');
+});
+
+// --- syncStateSignature [D6] ------------------------------------------------
+//
+// The upload gate rests entirely on this function. If it can call two
+// different states equal, the coordinator will skip an upload it needed.
+
+const sigNote = (over = {}) => ({
+  id: 'n1', title: 'Untitled.txt', text: 'body', createdAt: 1, updatedAt: 2,
+  pinned: false, isDeleted: 0, deletedAt: null,
+  stamps: makeStamps(2, 0, 'dev'),
+  ...over,
+});
+
+test('syncStateSignature ignores writerDeviceId and writtenAt', async () => {
+  const base = { notes: [sigNote()], versions: [], tombstones: [] };
+  const a = await syncStateSignature({ ...base, writerDeviceId: 'device-a', writtenAt: 1000 });
+  const b = await syncStateSignature({ ...base, writerDeviceId: 'device-b', writtenAt: 9999 });
+  assertEquals(a, b,
+    'these are diagnostic-only fields; including them would make every payload '
+    + 'unique and the gate would upload on every cycle');
+});
+
+test('syncStateSignature is independent of array order', async () => {
+  const n1 = sigNote({ id: 'a' });
+  const n2 = sigNote({ id: 'b' });
+  const a = await syncStateSignature({ notes: [n1, n2], versions: [], tombstones: [] });
+  const b = await syncStateSignature({ notes: [n2, n1], versions: [], tombstones: [] });
+  assertEquals(a, b, 'remote union order must not force a spurious upload');
+});
+
+test('syncStateSignature distinguishes versions whose textHash is blank but text differs', async () => {
+  // The sync file format permits an empty textHash, and the legacy migration
+  // path manufactures exactly that. Trusting the field would let two devices
+  // hold different history text under an identical signature, forever.
+  const v = (text) => ({ noteId: 'n1', at: 5, sourceRev: 1, textHash: '', text });
+  const a = await syncStateSignature({ notes: [], versions: [v('one')], tombstones: [] });
+  const b = await syncStateSignature({ notes: [], versions: [v('two')], tombstones: [] });
+  assert(a !== b, 'version text must be part of the signature, not just its hash');
+});
+
+test('remoteCanonical and uploadPayload agree under over-count and skewed histories', async () => {
+  const now = Date.now();
+  const mk = (at) => ({ w: at, c: 0, d: 'dev-r' });
+  const stamps = { text: mk(now - 1000), title: mk(now - 1000), pinned: mk(now - 1000), lifecycle: mk(now - 1000) };
+  const note = { id: 'n1', title: 't', text: 'body', createdAt: 1, updatedAt: now, pinned: false, isDeleted: 0, deletedAt: null, stamps };
+  const versions = [];
+  for (let i = 0; i < 55; i += 1) {
+    versions.push({ noteId: 'n1', at: now - (2 + i) * 86400000, sourceRev: i, textHash: '', text: 'v' + i });
+  }
+  // A writer with a fast clock: a version stamped three hours in the future.
+  versions.push({ noteId: 'n1', at: now + 3 * 3600000, sourceRev: 99, textHash: '', text: 'future' });
+  const base = { stamps, textHash: await computeTextHash('body') };
+  const plan = await computeMergePlan({
+    localNotes: [note], localVersions: versions.slice(), remoteNotes: [{ ...note }],
+    remoteVersions: versions.slice(), localTombstones: [], remoteTombstones: [],
+    bases: new Map([['n1', base]]), deviceId: 'dev-l',
+  });
+  assertEquals(
+    await syncStateSignature(plan.uploadPayload),
+    await syncStateSignature(plan.remoteCanonical),
+    'identical content must yield identical canonical signatures regardless of trimming or skew',
+  );
 });
