@@ -62,4 +62,15 @@ assert.ok(robots.includes('Disallow: /tests/'));
 const png=readFileSync(join(root,'social-card.png'));
 assert.equal(png.readUInt32BE(16),1200);
 assert.equal(png.readUInt32BE(20),630);
+const preview=readFileSync(join(root,'preview/premium/index.html'),'utf8');
+assert.match(preview,/<meta name="robots" content="noindex,nofollow">/);
+assert.ok(preview.includes("connect-src 'none'"),'prototype blocks network service requests');
+assert.ok(!sitemap.includes('/preview/'),'prototype stays out of the sitemap');
+for(const [,file] of pages){
+ assert.ok(!readFileSync(join(root,file),'utf8').includes('/preview/'),'public pages must not promote the prototype');
+}
+for(const file of ['preview/premium/model.js','preview/premium/preview.js']){
+ const code=readFileSync(join(root,file),'utf8');
+ assert.ok(!/indexedDB|localStorage|sessionStorage|fetch\s*\(|\.\.\//.test(code),file+' must not access storage, services or production modules');
+}
 console.log('public-pages: OK (6 public pages, metadata, links, schema, PWA identity and storage boundary)');

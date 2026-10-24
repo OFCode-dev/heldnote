@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex,nofollow">
+  <meta name="referrer" content="no-referrer">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self'; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <title>Heldnote Premium — sample-only prototype</title>
+  <link rel="icon" href="/logo.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/public.css">
+  <link rel="stylesheet" href="./preview.css">
+</head>
+<body>
+  <a class="skip" href="#main">Skip to prototype</a>
+  <header class="preview-header">
+    <a class="wordmark" href="/"><img src="/logo.svg" width="32" height="32" alt="">heldnote</a>
+    <span class="prototype-badge">PREMIUM EXPLORATION</span>
+    <a href="/app">Go to your real notepad ↗</a>
+  </header>
+  <main id="main">
+    <div class="preview-intro">
+      <div><p class="eyebrow">A LITTLE MORE ROOM FOR YOUR ROUTINE</p><h1>Collect. Reuse. Keep writing.</h1></div>
+      <p>Explore collections and personal templates.<br>No purchase, activation or Google connection.</p>
+    </div>
+    <aside class="session-notice" aria-label="Prototype limits"><strong>Sample-only prototype.</strong> Use sample text only. Changes live in this tab’s memory and disappear on reload or close. This page does not open your real notes, browser storage or Drive. Download a preview file to keep this experiment.</aside>
+    <noscript><p class="session-notice">JavaScript is needed for this interactive prototype. Your real notepad is separate.</p></noscript>
+    <div class="preview-toolbar">
+      <p id="status" role="status" aria-live="polite">Preparing sample notes…</p>
+      <div><button id="export-preview" type="button" disabled>Download preview</button><button id="import-preview" type="button" disabled>Import preview</button><button id="reset-preview" type="button" disabled>Reset samples</button></div>
+      <input id="import-file" type="file" accept="application/json,.json" hidden>
+    </div>
+    <section class="workbench" aria-label="Sample writing workspace">
+      <aside class="collections-panel">
+        <p class="panel-label">YOUR COLLECTIONS</p>
+        <nav id="collection-list" aria-label="Sample collections"></nav>
+        <form id="collection-form"><label for="collection-name">New collection</label><div class="inline-form"><input id="collection-name" name="name" maxlength="80" placeholder="e.g. Project notes" required disabled><button type="submit" aria-label="Add collection" disabled>+</button></div></form>
+        <p class="small-print">Remove a collection anytime.<br>Its notes stay in All notes.</p>
+      </aside>
+      <section class="notes-panel" aria-labelledby="list-heading">
+        <div class="panel-heading"><h2 id="list-heading">All notes</h2><button id="new-note" type="button" disabled>+ New</button></div>
+        <p id="collection-description" class="small-print">A place for every sample thought.</p>
+        <button id="delete-collection" class="remove-button" type="button" hidden>Remove collection; keep notes</button>
+        <div id="note-list" class="note-list"></div>
+      </section>
+      <section class="editor-panel" aria-label="Sample note editor">
+        <div id="empty-editor" hidden><h2>A little space to begin.</h2><p>Create a sample note or start from a template.</p></div>
+        <div id="note-editor">
+          <label class="panel-label" for="note-title">SAMPLE NOTE TITLE</label><input id="note-title" maxlength="120" required disabled>
+          <div class="editor-meta"><label for="note-collection">Collection</label><select id="note-collection" disabled></select><span>SESSION ONLY</span></div>
+          <label class="sr-only" for="note-text">Sample note text</label><textarea id="note-text" maxlength="50000" spellcheck="false" disabled></textarea>
+          <p class="editor-footnote">No history or durable saving in this prototype. The real notepad keeps its existing recovery features.</p>
+        </div>
+      </section>
+    </section>
+    <section class="template-section" aria-labelledby="templates-heading">
+      <div class="template-intro"><p class="eyebrow">A FAMILIAR STARTING POINT</p><h2 id="templates-heading">Make a routine your own.</h2><p>A template always creates a new sample note. Your current note stays as you left it.</p></div>
+      <div><div id="template-list" class="template-list"></div>
+        <details id="template-details"><summary>Create a personal template</summary><form id="template-form"><label for="template-name">Template name</label><input id="template-name" maxlength="120" placeholder="e.g. Weekly reflection" required disabled><label for="template-text">Starting text</label><textarea id="template-text" maxlength="50000" rows="5" placeholder="A few prompts to begin with…" disabled></textarea><button type="submit" disabled>Add template</button></form></details>
+      </div>
+    </section>
+    <dialog id="confirm-dialog" aria-labelledby="confirm-title" aria-describedby="confirm-copy"><form method="dialog"><h2 id="confirm-title">Replace these samples?</h2><p id="confirm-copy"></p><p>Download the current preview first if you want to keep your changes. Your real Heldnote library is separate.</p><div class="dialog-actions"><button value="cancel" autofocus>Cancel</button><button value="confirm" id="confirm-action">Replace samples</button></div></form></dialog>
+  </main>
+  <footer class="preview-footer">Heldnote · Product prototype · No paid tier is active. <a href="/">Back to Heldnote</a></footer>
+  <script type="module" src="./preview.js"></script>
+</body>
+</html>

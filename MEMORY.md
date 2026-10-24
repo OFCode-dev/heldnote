@@ -1,0 +1,86 @@
+# Heldnote current decisions and gates
+
+Updated 24 October 2026. Engineering handoff; no customer data belongs here.
+
+## Review state
+
+- Working branch: `feature/brand-landing`. Clean at the start of the Premium
+  prototype slice; prior head `e4a2c67`. No unknown edits were present.
+- [Draft PR #1](https://github.com/OFCode-dev/heldnote/pull/1) contains OAuth
+  lifecycle fixes. [Draft PR #2](https://github.com/OFCode-dev/heldnote/pull/2)
+  is stacked on its branch and contains landing/brand/sponsor preparation,
+  the Premium proposal and the isolated prototype. Neither is merged.
+- Repository visibility was checked: it is public. Draft PR status does not
+  make source private; no visibility or access setting was changed.
+- Production is unchanged. No DNS, Cloud console, real Google login, sponsor
+  outreach, payment activation or ad activation was performed in this slice.
+
+## Durable decisions
+
+- Current free notes/history/recovery/export/Drive remain free. The editor
+  remains ad-free for everyone. Existing storage limits are still real.
+- Premium v1 proposal: collections, personal templates and later convenient
+  batch export. US$19 once is only a provisional research hypothesis; no price
+  is published in the prototype, no paid tier exists and no checkout is active.
+- Direct sponsors precede AdSense. Future programmatic ads need a separate
+  public-content origin. Keep the editor's current origin stable.
+- The reported Google symptom is account selection/consent after returning
+  later, not a failure to connect on every immediate reload. Static GIS access
+  tokens expire; the current architecture does not provide permanent login.
+- The owner reports Search Console ownership verified. Cloud branding review
+  status and production audience still need account-side confirmation.
+
+## Prototype boundary
+
+- Local review route: `/preview/premium/`; UI is English. It is not linked from
+  customer pages or included in sitemap; robots metadata is noindex/nofollow.
+- Memory-only sample library. No IndexedDB, local/session storage, production
+  store imports or service requests. CSP denies connections. Refresh restores
+  original fixtures; the page visibly warns to use sample text only.
+- Collection deletion removes membership, never notes. Template application
+  creates a distinct note. Text is not normalized by the model.
+- Download/import use `heldnote-premium-preview` version 1, distinct from real
+  backups. Imports validate before replacement and require UI confirmation.
+  Invalid files and cancellation preserve the current samples.
+- Production DB, autosave, recovery, import/export and Drive code are unchanged.
+  There is no production migration or entitlement implementation to enable.
+- This same-origin route is code-isolated, not an origin sandbox or an access
+  control mechanism. Do not add third-party scripts or real-note access.
+
+## Validation
+
+- Baseline before this slice: 167 browser tests, public-page checks and legal
+  links passed.
+- Updated unit suite: 179 browser tests pass, including 12 targeted prototype
+  tests. Synthetic production backup checks confirm mutual file rejection and
+  preserve exact note/draft/history text; existing backup import still works.
+- The preview browser check covers denied storage, collection retention,
+  template non-overwrite, import/download/cancel, text-only rendering, memory
+  reset, synthetic note/history isolation, keyboard/Escape, blank-title draft
+  handling, five widths, JS-off and no remote requests. The browser check passes.
+- Static route checks enforce noindex, sitemap/navigation exclusion and no
+  production imports/storage calls from preview modules. Legal links pass.
+
+## Remaining gates
+
+1. The prototype browser check and desktop/mobile screenshots are reviewed.
+   Next product checkpoint: observe collection/template tasks using sample notes
+   and record whether they solve a recurring writing problem. This prototype
+   has no saved views, batch export or production persistence.
+2. Before release: real phone/desktop Drive round trip, offline/conflict and
+   fresh-browser recovery; installed Safari/Chrome behavior; real draft
+   recovery and latency/quota measurements. Simulated tests do not close these.
+3. Owner approval before production. Review #1, then retarget #2 to main after
+   #1 merges; merging main triggers deploy. No merge is authorized now.
+4. Before real collections/templates: approve data format and old-client
+   behavior; test schema upgrade/rollback constraints, independent backup,
+   import/export and Drive merge compatibility. Never gate existing notes.
+5. Before sales: validate useful scope/price, choose seller entity/country,
+   verify provider onboarding/payouts, approve license/support/refund terms and
+   separate trusted fulfillment infrastructure. No browser-shipped secrets.
+6. Before sponsorship: owner selects/agrees partner, placement and reporting.
+   Before AdSense: approve separate origin, actual provider configuration,
+   content eligibility and applicable disclosures/consent. No outreach yet.
+
+Localization beyond English, pricing research and real-device acceptance are
+explicit follow-up work. The current English prototype is for review only.

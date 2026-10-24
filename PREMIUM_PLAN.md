@@ -144,8 +144,13 @@ operating costs, recovery behavior and a new service architecture are known.
 
 ## Next concrete increment
 
-After the current release checks, prototype collections and template creation
-against sample notes. Review English and Turkish flows at phone and desktop
-widths without billing or production-data access. Use those tasks to decide
-whether the proposed bundle is worth building before changing the database
-or publishing a pricing page.
+An English sample-only prototype is available at `/preview/premium/` on the
+review branch. Collections and personal templates use session memory only;
+refresh discards the examples. Preview JSON is deliberately incompatible with
+real backups, and import requires confirmation. No paid activation, price,
+production schema change or Drive integration is included.
+
+Review these tasks at phone and desktop widths before building real storage or
+a pricing page. Turkish prototype localization, saved views and batch export
+remain later work. Keep release QA and owner approval as independent gates.
+See [MEMORY.md](MEMORY.md) for validation and exact remaining decisions.

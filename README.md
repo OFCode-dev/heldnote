@@ -35,7 +35,13 @@ requires the separate-origin and consent work described in BRAND.md.
 
 The [Premium proposal](PREMIUM_PLAN.md) records a possible one-time paid
 productivity bundle and its validation/release gates. It does not implement
-billing or change the current free feature set.
+billing or change the current free feature set. The English sample-only
+prototype at `/preview/premium/` explores collections and personal templates
+in session memory; it never opens real notes or browser storage. Reload resets
+it. Its optional JSON files are for the preview only, not production backups.
+
+For ongoing work, start with [AGENTS.md](AGENTS.md), [CODEX.md](CODEX.md) and
+[MEMORY.md](MEMORY.md); these record execution boundaries and remaining gates.
 
 ## Status
 

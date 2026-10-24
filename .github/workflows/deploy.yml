@@ -45,7 +45,9 @@ jobs:
         run: npx wait-on http://127.0.0.1:8080/tests.html
 
       - name: Run browser test suite
-        run: node .github/scripts/run-tests.mjs
+        run: |
+          node .github/scripts/run-tests.mjs
+          node tests/premium-preview-browser.mjs
 
   deploy:
     name: Deploy to GitHub Pages
