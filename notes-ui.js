@@ -614,6 +614,18 @@ export function renderNotesPanel(container, { onSelect, onImportComplete, onNote
     const disconnectButton = container.querySelector('#drive-disconnect');
     const driveStatus = container.querySelector('#drive-status');
 
+    function showConnectionError(error) {
+      const key = {
+        'popup-blocked': 'drive.errorPopup',
+        timeout: 'drive.errorTimeout',
+        'consent-denied': 'drive.errorConsent',
+        network: 'drive.errorNetwork',
+        'auth-retry': 'drive.errorRetrySignIn',
+        'auth-needed': 'drive.syncAuthNeeded',
+      }[error && error.code] || 'drive.errorSignIn';
+      driveStatus.textContent = t(key);
+    }
+
     function renderConnectionControls() {
       const connected = driveSync.isConnected();
       connectButton.hidden = connected;
@@ -643,7 +655,7 @@ export function renderNotesPanel(container, { onSelect, onImportComplete, onNote
         if (status.invalidLegacyRecords) warnings.push(t('drive.syncInvalidLegacy').replace('{count}', status.invalidLegacyRecords));
         if (status.rejectedFiles) warnings.push(t('drive.syncRejectedFiles').replace('{count}', status.rejectedFiles));
         driveStatus.textContent = `${t('drive.synced')} ${new Date(status.at).toLocaleString(getLanguage())}${warnings.length ? ` · ${warnings.join(' ')}` : ''}`;
-      } else if (status.state === 'auth-needed') driveStatus.textContent = t('drive.syncAuthNeeded');
+      } else if (status.state === 'auth-needed' || (status.state === 'idle' && !driveSync.hasFreshToken())) driveStatus.textContent = t('drive.syncAuthNeeded');
       else if (status.state === 'retry-pending') driveStatus.textContent = t('drive.syncRetry');
       else if (status.state === 'error' && status.reason === 'memory-pending') driveStatus.textContent = t('drive.syncMemoryPending');
       else if (status.state === 'error' && status.reason === 'update-required') driveStatus.textContent = t('drive.syncUpdateRequired');
@@ -659,17 +671,10 @@ export function renderNotesPanel(container, { onSelect, onImportComplete, onNote
         await driveSync.connect();
         sync.initSync();
         renderConnectionControls();
-        await sync.syncNow();
+        await sync.syncNow({ silent: true });
       } catch (error) {
         console.error('heldnote: Drive connection failed', error);
-        const key = error && error.code === 'popup-blocked'
-          ? 'drive.errorPopup'
-          : error && error.code === 'timeout'
-            ? 'drive.errorTimeout'
-            : error && error.code === 'consent-denied'
-              ? 'drive.errorConsent'
-              : 'drive.errorGeneric';
-        driveStatus.textContent = t(key);
+        showConnectionError(error);
       } finally {
         connectButton.disabled = false;
       }
@@ -678,7 +683,13 @@ export function renderNotesPanel(container, { onSelect, onImportComplete, onNote
     syncButton.addEventListener('click', async () => {
       syncButton.disabled = true;
       try {
-        await sync.syncNow();
+        // Authorize in this click, before the coordinator awaits IndexedDB.
+        // The subsequent cycle must never open a popup after network/storage IO.
+        await driveSync.withToken(() => {});
+        await sync.syncNow({ silent: true });
+      } catch (error) {
+        console.error('heldnote: Drive sign-in failed', error);
+        showConnectionError(error);
       } finally {
         syncButton.disabled = false;
       }

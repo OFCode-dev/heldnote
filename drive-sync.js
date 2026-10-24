@@ -1,14 +1,13 @@
-// drive-sync.js — Google Drive backup for Heldnote.
+// drive-sync.js — OAuth and Google Drive transport for Heldnote.
 //
 // Design constraints, in the spirit of the product's promises:
-// - The Drive copy is a *backup*, never the source of truth. Restore imports
-//   as copies (store-api.md's safe, additive mode); nothing here can destroy
-//   local notes.
+// - This module only transports files. sync.js owns two-way merging; legacy
+//   backup helpers remain available for migration. Local notes live in store.js.
 // - Everything runs in the browser against Drive's appDataFolder — an
 //   app-scoped hidden folder (scope drive.appdata), so Heldnote never sees
 //   the user's real Drive contents and needs no server.
-// - The OAuth access token lives in memory only. What persists locally is a
-//   single "connected" flag and the last-backup timestamp, both cosmetic.
+// - The short-lived OAuth token is cached in localStorage across reloads.
+//   Authentication never changes the note database.
 //
 // The whole feature is inert until constants.js sets GOOGLE_DRIVE_CLIENT_ID.
 
@@ -23,29 +22,17 @@ const CONNECTED_KEY = 'heldnote-drive-connected';
 const LAST_BACKUP_KEY = 'heldnote-drive-last-backup';
 const LAST_ERROR_KEY = 'heldnote-drive-last-error';
 const TOKEN_KEY = 'heldnote-drive-token';
-// Set once a token has ever been granted. Its presence means Google already
-// holds a grant for this app, so token requests use prompt: '' — Google then
-// shows UI only when it actually needs something. The old behaviour passed
-// prompt: 'consent' on every connect, which ORDERS Google to re-show the full
-// consent screen even though the grant exists — the single loudest complaint
-// from real two-device use.
-const GRANTED_KEY = 'heldnote-drive-granted';
-
-function hasEverGranted() {
-  try { return localStorage.getItem(GRANTED_KEY) === '1'; } catch (e) { return false; }
-}
-
-let tokenClient = null;
 let accessToken = null;
 let tokenExpiresAt = 0;
 let gisLoadPromise = null;
+let pendingTokenRequest = null;
+let authGeneration = 0;
 
 // The access token survives reloads (~1h lifetime). Without this, every page
 // load forgot the session and every backup/restore marched the user through
-// Google's account chooser again — the single loudest complaint about v1 of
-// this feature. Scope is drive.appdata only (an app-private folder), and the
-// page loads no third-party scripts besides Google's own GIS client, which
-// bounds what a stored token could leak.
+// Google's account chooser again. Scope is drive.appdata only (an app-private
+// folder). Any script on this origin can read this cache and the note database;
+// advertising must be isolated from the note-storage origin.
 try {
   const stored = JSON.parse(localStorage.getItem(TOKEN_KEY) || 'null');
   if (stored && typeof stored.token === 'string' && Number.isFinite(stored.expiresAt) && stored.expiresAt > Date.now() + 60_000) {
@@ -103,20 +90,33 @@ function setConnected(flag) {
   } catch (e) { /* cosmetic only */ }
 }
 
+function gisReady() {
+  return typeof window.google?.accounts?.oauth2?.initTokenClient === 'function';
+}
+
 function loadGis() {
-  if (window.google && window.google.accounts && window.google.accounts.oauth2) {
-    return Promise.resolve();
-  }
+  if (gisReady()) return Promise.resolve();
   if (gisLoadPromise) return gisLoadPromise;
   gisLoadPromise = new Promise((resolve, reject) => {
     const script = document.createElement('script');
     script.src = GIS_SRC;
     script.async = true;
-    script.onload = () => resolve();
-    script.onerror = () => {
-      gisLoadPromise = null; // allow a later retry — e.g. a transient network failure
-      reject(driveError('network', 'Google script failed to load'));
-    };
+    let settled = false;
+    const watchdog = setTimeout(() => finish(false), 15_000);
+    function finish(ok) {
+      if (settled) return;
+      settled = true;
+      clearTimeout(watchdog);
+      script.onload = script.onerror = null;
+      if (ok) resolve();
+      else {
+        script.remove();
+        gisLoadPromise = null;
+        reject(driveError('network', 'Google script failed to load'));
+      }
+    }
+    script.onload = () => finish(gisReady());
+    script.onerror = () => finish(false);
     document.head.appendChild(script);
   });
   return gisLoadPromise;
@@ -130,21 +130,24 @@ function driveError(code, message) {
 
 // Resolves with a usable access token, prompting for consent only when Google
 // requires it (first connect, revoked access, expired session).
-async function getToken({ forceConsent = false } = {}) {
+async function getToken({ silent = false } = {}) {
   if (!isConfigured()) throw driveError('not-configured', 'Drive client id is not set');
-  if (!forceConsent && accessToken && Date.now() < tokenExpiresAt - 30_000) {
+  if (accessToken && Date.now() < tokenExpiresAt - 30_000) {
     return accessToken;
   }
-  await loadGis();
-  if (!tokenClient) {
-    tokenClient = window.google.accounts.oauth2.initTokenClient({
-      client_id: GOOGLE_DRIVE_CLIENT_ID,
-      scope: SCOPE,
-      callback: () => {},       // both replaced per-request below
-      error_callback: () => {},
-    });
+  // prompt: '' still uses a popup. Background work must not enter GIS at all.
+  if (silent) throw driveError('auth-needed', 'sign in to resume sync');
+  const generation = authGeneration;
+  // Avoid yielding the click gesture when the library is already available.
+  if (!gisReady()) await loadGis();
+  if (generation !== authGeneration) throw driveError('auth-needed', 'disconnected during sign-in');
+  if (pendingTokenRequest) return pendingTokenRequest.promise;
+  if (navigator.userActivation && !navigator.userActivation.isActive) {
+    throw driveError('auth-retry', 'sign-in is ready; click again to open Google');
   }
-  return new Promise((resolve, reject) => {
+  const request = { promise: null, cancel: null };
+  pendingTokenRequest = request;
+  request.promise = new Promise((resolve, reject) => {
     // A connect attempt must always settle: QA found "Connecting…" pinned on
     // screen for 90+ seconds with the button disabled, because a blocked
     // popup produces neither callback. error_callback catches the blocked/
@@ -158,41 +161,64 @@ async function getToken({ forceConsent = false } = {}) {
       if (settled) return;
       settled = true;
       clearTimeout(watchdog);
+      if (pendingTokenRequest === request) pendingTokenRequest = null;
       resolve(value);
     }
     function finishReject(error) {
       if (settled) return;
       settled = true;
       clearTimeout(watchdog);
+      if (pendingTokenRequest === request) pendingTokenRequest = null;
       reject(error);
     }
-    tokenClient.callback = (response) => {
-      if (response.error) {
+    request.cancel = () => finishReject(driveError('auth-needed', 'disconnected during sign-in'));
+    const callback = (response) => {
+      // Google may answer after our timeout or after an explicit disconnect.
+      // Such a response must not resurrect a token or record a grant.
+      if (settled) return;
+      if (response && response.error) {
         finishReject(driveError(response.error === 'access_denied' ? 'consent-denied' : 'auth-failed', response.error));
         return;
       }
+      const lifetime = Number(response && response.expires_in);
+      if (!response || typeof response.access_token !== 'string' || !response.access_token.trim()
+          || !Number.isFinite(lifetime) || lifetime <= 0) {
+        finishReject(driveError('auth-failed', 'Google returned an invalid token response'));
+        return;
+      }
+      if (typeof response.scope !== 'string' || !response.scope.split(/\s+/).includes(SCOPE)) {
+        finishReject(driveError('consent-denied', 'Drive permission was not granted'));
+        return;
+      }
       accessToken = response.access_token;
-      tokenExpiresAt = Date.now() + (Number(response.expires_in) || 3600) * 1000;
+      tokenExpiresAt = Date.now() + lifetime * 1000;
       persistToken();
-      try { localStorage.setItem(GRANTED_KEY, '1'); } catch (e) { /* cosmetic */ }
       finishResolve(accessToken);
     };
-    tokenClient.error_callback = (error) => {
+    const errorCallback = (error) => {
       const type = error && error.type;
       if (type === 'popup_failed_to_open') finishReject(driveError('popup-blocked', 'sign-in popup was blocked'));
       else if (type === 'popup_closed') finishReject(driveError('consent-denied', 'sign-in popup was closed'));
       else finishReject(driveError('auth-failed', String(type || error)));
     };
     try {
-      // 'consent' only on the very first connect ever (no recorded grant) or
-      // right after an explicit disconnect, which revokes the grant. In every
-      // other case prompt: '' lets Google decide: with a live session and an
-      // existing grant the popup self-closes without showing a consent screen.
-      tokenClient.requestAccessToken({ prompt: forceConsent && !hasEverGranted() ? 'consent' : '' });
+      // Both callbacks belong to this attempt and are supplied through the
+      // documented configuration, rather than mutating a shared client.
+      const tokenClient = window.google.accounts.oauth2.initTokenClient({
+        client_id: GOOGLE_DRIVE_CLIENT_ID,
+        scope: SCOPE,
+        callback,
+        error_callback: errorCallback,
+      });
+      // Google knows whether this account already granted access. A browser's
+      // missing/stale marker cannot tell us that. Never force repeat consent;
+      // first-time or revoked access will still receive Google's own prompt.
+      tokenClient.requestAccessToken({ prompt: '' });
     } catch (error) {
       finishReject(driveError('auth-failed', String(error)));
     }
   });
+  return request.promise;
 }
 
 async function driveFetch(token, url, options = {}) {
@@ -223,7 +249,7 @@ async function findBackupFile(token) {
 // user (prompt: '').
 
 export async function withToken(work, { silent = false } = {}) {
-  let token = await getToken();
+  let token = await getToken({ silent });
   try {
     return await work(token);
   } catch (error) {
@@ -240,17 +266,20 @@ export async function withToken(work, { silent = false } = {}) {
 }
 
 export async function connect() {
-  await getToken({ forceConsent: true });
+  const generation = authGeneration;
+  await getToken();
+  if (generation !== authGeneration) throw driveError('auth-needed', 'disconnected during sign-in');
   setConnected(true);
 }
 
 export function disconnect() {
+  authGeneration++;
+  if (pendingTokenRequest) pendingTokenRequest.cancel();
   const token = accessToken;
   clearToken();
   setConnected(false);
-  // The revoke below invalidates the grant server-side, so the next connect
-  // legitimately needs the consent screen again.
-  try { localStorage.removeItem(GRANTED_KEY); } catch (e) { /* cosmetic */ }
+  // Remove the obsolete local consent marker. Google owns the actual grant.
+  try { localStorage.removeItem('heldnote-drive-granted'); } catch (e) { /* cosmetic */ }
   // Best-effort revoke; local state is already cleared either way.
   if (token && window.google && window.google.accounts && window.google.accounts.oauth2) {
     try { window.google.accounts.oauth2.revoke(token, () => {}); } catch (e) { /* best effort */ }
