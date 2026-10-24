@@ -33,6 +33,10 @@ No advertising or analytics integration has been activated. A first-party
 static sponsorship is the lowest-complexity option; programmatic advertising
 requires the separate-origin and consent work described in BRAND.md.
 
+The [Premium proposal](PREMIUM_PLAN.md) records a possible one-time paid
+productivity bundle and its validation/release gates. It does not implement
+billing or change the current free feature set.
+
 ## Status
 
 Implemented and under active review. All planned v1 modules (`db.js`,

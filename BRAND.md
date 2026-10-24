@@ -48,6 +48,11 @@ to measure, not guarantees or certifications.
 
 ## Commercial direction
 
+Keep the current notepad, recovery, exports and optional Drive sync free.
+The [Premium proposal](PREMIUM_PLAN.md) explores a one-time productivity bundle
+with collections, templates and batch export. It is a planning draft; no paid
+tier or checkout is active. Privacy and an ad-free editor apply to everyone.
+
 No ad integration is active. Start with clearly labelled, first-party static
 sponsorships if a partner is agreed; these need no third-party script. Never
 invent a sponsor or publisher ID.
