@@ -20,6 +20,11 @@ Updated 24 October 2026. Engineering handoff; no customer data belongs here.
 
 ## Durable decisions
 
+- The owner deferred product discussion. The latest authorized slice is only
+  the public-contact correction; it does not reopen Premium development/sales.
+- The public contact is recorded in [BRAND.md](BRAND.md). Current general,
+  privacy, legal/licensing and sponsorship contact copy uses that confirmed
+  address. Login, account identity and mailbox/security setup are separate.
 - Current free notes/history/recovery/export/Drive remain free. The editor
   remains ad-free for everyone. Existing storage limits are still real.
 - Premium v1 proposal: collections, personal templates and later convenient
@@ -112,3 +117,30 @@ Updated 24 October 2026. Engineering handoff; no customer data belongs here.
 
 Localization beyond English, pricing research and real-device acceptance are
 explicit follow-up work. The current English prototype is for review only.
+
+## Public-contact correction — 24 October 2026
+
+- Began clean at `0a02180`. Five current public files had product-domain
+  contact/privacy addresses: LICENSE, privacy.html, terms.html, about.html and
+  sponsorship.html. No personal Gmail was found in the current source/draft
+  scan; this correction aligns those public roles with the confirmed contact.
+- Provenance: `ec3bcb7` introduced the LICENSE request address; `0ffb81e`
+  introduced separate general/privacy addresses; `fb4ddda` copied general
+  contact into Terms. `a21fa59` carried it into About and Sponsorship. The
+  checked-in pages were maintained independently, without a shared contact
+  record or generator; existing checks did not compare mailto destinations.
+- BRAND.md now records the confirmed public contact and all five static
+  locations to maintain together. No runtime config/build/generator was added.
+  /en/privacy and /en/terms remain redirects to the corrected canonical pages.
+- Existing commits, logs, screenshots and synced reference files remain
+  historical evidence. Authentication/Google configuration, credentials,
+  account identity and Git authorship were not changed. No mailbox, domain,
+  provider or security setup was performed; no email was sent.
+- Current local sources and active draft PRs are the correction targets.
+  Main and live pages remain unchanged until separately approved publication.
+- Limited verification: 11 current mailto targets/visible contacts align, the
+  sponsorship subject is preserved, both /en/ legal redirects still point to
+  canonical pages, and public-page/legal-link checks pass. A temporary copy of
+  the OAuth draft's three contact files also passes its 4-page legal checker
+  and 8 mailto checks. No app/storage/auth code changed; browser suites were
+  not rerun for this content-only correction.

@@ -6,6 +6,10 @@
   another product's brand, offer or backend.
 - Preserve unknown working-tree edits. Inspect the branch, status and project
   instructions before changing files. Prefer the existing suitable checkout.
+- Use the owner-confirmed public contact in [BRAND.md](BRAND.md) for current
+  support/privacy/legal/site copy. Review each address's role before editing;
+  never infer new mailboxes or replace authentication/account identity,
+  credentials, Git authorship or historical evidence with a public contact.
 - Protect writing first: never silently discard a draft, history, recoverable
   conflict or existing export. Saving, retention, sync and independent backup
   are different things; explain their limits accurately.

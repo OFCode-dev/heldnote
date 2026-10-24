@@ -46,6 +46,23 @@ canonicals, language alternates, social cards and structured data describe
 what is actually visible. Indexing, rankings and AI citations are outcomes
 to measure, not guarantees or certifications.
 
+## Public contact
+
+The owner-confirmed public contact is **contact@ofcodedev.me** (24 October
+2026). Use it for product/support questions, privacy requests, legal/licensing
+correspondence and sponsorship enquiries. This is a public routing decision,
+not a mailbox delivery test or permission to send mail.
+
+The contact also appears on the owner's public portfolio, https://ofcodedev.me/.
+No Heldnote-specific mailbox or future info/support alias is assumed provisioned.
+Do not substitute this address into Google sign-in, payment/store accounts,
+developer identity, Git authorship, credentials or historical evidence.
+
+The site has no contact generator: its checked-in HTML and LICENSE are the
+deployable source. Keep visible addresses and mailto recipients aligned in
+about.html, sponsorship.html, privacy.html, terms.html and LICENSE. The /en/
+legal routes redirect to their canonical pages rather than duplicate contacts.
+
 ## Commercial direction
 
 Keep the current notepad, recovery, exports and optional Drive sync free.
