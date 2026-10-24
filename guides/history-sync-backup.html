@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Version history, sync and backup: three different jobs — Heldnote</title>
+<meta name="description" content="Version history helps you revisit an edit. Sync brings changes to another device. A backup is a separate copy you can recover later. Heldnote offers all three, with different limits.">
+<link rel="canonical" href="https://heldnote.app/guides/history-sync-backup">
+<meta name="robots" content="index,follow,max-image-preview:large">
+<meta name="theme-color" content="#F4F1E9">
+<link rel="icon" type="image/svg+xml" href="/logo.svg">
+<link rel="icon" type="image/png" sizes="32x32" href="/icon-32.png">
+<link rel="apple-touch-icon" href="/icon-180.png">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="preload" href="/fonts/source-serif-4-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="/public.css">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Heldnote">
+<meta property="og:title" content="Version history, sync and backup: three different jobs — Heldnote">
+<meta property="og:description" content="Version history helps you revisit an edit. Sync brings changes to another device. A backup is a separate copy you can recover later. Heldnote offers all three, with different limits.">
+<meta property="og:url" content="https://heldnote.app/guides/history-sync-backup">
+<meta property="og:locale" content="en_US">
+<meta property="og:image" content="https://heldnote.app/social-card.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="Heldnote — a little space for your thoughts.">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:image" content="https://heldnote.app/social-card.png">
+
+<script type="application/ld+json">{"@context": "https://schema.org", "@type": "Article", "headline": "Version history, sync and backup: three different jobs", "description": "Version history helps you revisit an edit. Sync brings changes to another device. A backup is a separate copy you can recover later. Heldnote offers all three, with different limits.", "mainEntityOfPage": "https://heldnote.app/guides/history-sync-backup", "image": "https://heldnote.app/social-card.png", "datePublished": "2026-10-24", "dateModified": "2026-10-24", "inLanguage": "en", "author": {"@type": "Person", "name": "Ömer Faruk Bayrak", "url": "https://github.com/OFCode-dev"}, "publisher": {"@type": "Organization", "name": "OFCode", "url": "https://github.com/OFCode-dev"}}</script>
+</head><body><a class="skip" href="#main">Skip to content</a>
+<header class="site-header wrap">
+  <a class="wordmark" href="/" aria-label="Heldnote home"><img src="/logo.svg" width="37" height="37" alt="">heldnote</a>
+  <nav class="nav" aria-label="Main navigation">
+    <a class="nav-secondary" href="/#how-it-works">How it works</a>
+    <a class="nav-secondary" href="/about">Our story</a>
+    <a class="language" href="/tr/" lang="tr" hreflang="tr">TR</a>
+    <a class="nav-open" href="/app">Open notepad <span aria-hidden="true">↗</span></a>
+  </nav>
+</header><main id="main" class="wrap"><article class="article"><p class="eyebrow">A HELDNOTE FIELD GUIDE</p><h1>Version history, sync and backup: three different jobs</h1><p class="intro">Version history helps you revisit an edit. Sync brings changes to another device. A backup is a separate copy you can recover later. Heldnote offers all three, with different limits.</p><p class="byline">By Ömer Faruk Bayrak / OFCode · Updated <time datetime="2026-10-24">24 October 2026</time></p><h2>Which one do I need?</h2><div class="table-wrap"><table><thead><tr><th>Tool</th><th>Useful when</th><th>Important limit</th></tr></thead><tbody><tr><td>Version history</td><td>You want a paragraph you changed earlier.</td><td>It lives with the note in browser storage and has retention limits.</td></tr><tr><td>Drive sync</td><td>You want to continue writing on another device.</td><td>Changes, including deletions, can travel to other devices.</td></tr><tr><td>JSON backup</td><td>You need an independent copy of your library.</td><td>It reflects the moment you exported it; later edits are not included.</td></tr></tbody></table></div>
+<h2>How does version history work?</h2><p>Heldnote saves drafts while you type and makes periodic committed snapshots. The history panel lets you preview a saved version before restoring it. Restoring a version preserves the current text as another version, so trying an earlier draft does not silently discard the text you replaced.</p><p>History is bounded. Recent versions are protected within retention rules, while older history may be pruned to stay within byte budgets. This is not an unlimited archive of every keystroke.</p>
+<h2>What does Google Drive sync do?</h2><p>Each device pulls, merges and pushes an app-specific sync file. Renaming a note on one device and editing its text on another can merge as separate changes. If both devices change the same text, the losing text is preserved as a conflict version rather than silently thrown away.</p><p>Sync depends on Google’s availability, your connection and current authorization. Google’s browser access tokens expire, so you may need to click “Sync now” and choose an account again. Local saving continues independently.</p>
+<h2>Why is sync not an independent backup?</h2><p>Synchronization is designed to move changes. If you delete a note and later purge it, that deletion can travel too. Keeping every device in agreement is a different goal from keeping an untouched copy of yesterday’s library.</p><div class="callout"><p><strong>Use sync for continuity, and an exported file for recovery.</strong> Keeping one does not make the other redundant.</p></div>
+<h2>How should I back up important writing?</h2><ol><li>Export a JSON library before clearing browser data, replacing your library or changing devices.</li><li>Keep the exported file outside the browser’s own storage.</li><li>For important work, keep a copy away from the original device.</li><li>Refresh the backup after meaningful changes, and check that you can find the file.</li></ol>
+<h2>What should I do on a new device?</h2><p>Open Heldnote in a modern browser and connect the same Google account if you use Drive sync. The sync cycle reads the remote library before a fresh device uploads its own state. If you use file backups instead, import the JSON as copies first and check the result before making destructive changes.</p>
+<h2>What can no browser notepad promise?</h2><p>A browser can clear or evict site data, private sessions can end, devices can fail and a remote service can be unavailable. These limits are why Heldnote makes the storage state visible and includes export. The product is designed to reduce accidental text loss; permanent retention is not something a website can guarantee.</p>
+<h2>Sources and further reading</h2><ul class="source-list"><li><a href="/guides/browser-note-storage">Heldnote browser-storage guide</a></li><li><a href="https://developers.google.com/identity/oauth2/web/guides/use-token-model">Google Identity Services: token lifetime and renewal</a></li><li><a href="https://developer.mozilla.org/en-US/docs/Web/API/Storage_API/Storage_quotas_and_eviction_criteria">MDN: storage retention and eviction</a></li><li><a href="https://github.com/OFCode-dev/heldnote">Heldnote’s storage and synchronization implementation</a></li></ul><div class="article-cta"><a class="button" href="/app">Open your notepad <span aria-hidden="true">↗</span></a></div><nav aria-label="Related pages"><a href="/">Back to Heldnote</a><a href="/guides/browser-note-storage">Browser storage guide</a><a href="/guides/history-sync-backup">History, sync and backup</a></nav></article></main><footer class="site-footer wrap">
+  <a class="wordmark" href="/"><img src="/logo.svg" width="28" height="28" alt="">heldnote</a>
+  <span>A little space for your thoughts. · By OFCode</span>
+  <div class="footer-links"><a href="/sponsorship">Sponsorship</a><a href="/about">About</a><a href="/privacy">Privacy</a><a href="/terms">Terms</a><a href="https://github.com/OFCode-dev/heldnote">Source code <span aria-hidden="true">↗</span></a></div>
+</footer></body></html>

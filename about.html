@@ -1,317 +1,51 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Heldnote — local-first notes with version history</title>
-  <meta name="description" content="What Heldnote is: a free, local-first browser notepad that keeps every version of every note in your own browser storage — no account, no server, no dependencies.">
-  <link rel="canonical" href="https://heldnote.app/about">
-  <link rel="preload" href="fonts/source-serif-4-latin.woff2" as="font" type="font/woff2" crossorigin>
-  <link rel="icon" type="image/png" sizes="32x32" href="icon-32.png">
-  <meta name="theme-color" content="#FFFBEB" media="(prefers-color-scheme: light)">
-  <meta name="theme-color" content="#1C1917" media="(prefers-color-scheme: dark)">
-  <meta name="theme-color" content="#FFFBEB">
-  <meta property="og:title" content="What Heldnote is — local-first notes with version history">
-  <meta property="og:description" content="A free, local-first browser notepad that keeps every version of every note in your own browser storage — no account, no server, no dependencies.">
-  <meta property="og:url" content="https://heldnote.app/about">
-  <meta property="og:image" content="https://heldnote.app/icon-512.png">
-  <meta property="og:image:alt" content="The Heldnote mark: a small monitor showing three lines of text and a caret.">
-  <meta property="og:type" content="website">
-  <meta property="og:site_name" content="Heldnote">
-  <meta name="twitter:card" content="summary">
-  <meta name="twitter:title" content="What Heldnote is — local-first notes with version history">
-  <meta name="twitter:description" content="A free, local-first browser notepad that keeps every version of every note in your own browser storage — no account, no server, no dependencies.">
-  <meta name="twitter:image" content="https://heldnote.app/icon-512.png">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>A small place for thoughts in progress. — Heldnote</title>
+<meta name="description" content="Heldnote is a local-first browser notepad by OFCode. Its purpose is simple: make it easy to begin writing, change your mind, and return to earlier work.">
+<link rel="canonical" href="https://heldnote.app/about">
+<meta name="robots" content="index,follow,max-image-preview:large">
+<meta name="theme-color" content="#F4F1E9">
+<link rel="icon" type="image/svg+xml" href="/logo.svg">
+<link rel="icon" type="image/png" sizes="32x32" href="/icon-32.png">
+<link rel="apple-touch-icon" href="/icon-180.png">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="preload" href="/fonts/source-serif-4-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="/public.css">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Heldnote">
+<meta property="og:title" content="A small place for thoughts in progress. — Heldnote">
+<meta property="og:description" content="Heldnote is a local-first browser notepad by OFCode. Its purpose is simple: make it easy to begin writing, change your mind, and return to earlier work.">
+<meta property="og:url" content="https://heldnote.app/about">
+<meta property="og:locale" content="en_US">
+<meta property="og:image" content="https://heldnote.app/social-card.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="Heldnote — a little space for your thoughts.">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:image" content="https://heldnote.app/social-card.png">
 
-  <!-- FAQPage markup, paired one-to-one with the visible questions further
-       down this page. Both search engines and answer engines require that: an
-       answer that exists only in the markup is a cloaked answer. Keep the two
-       in step — if a question changes below, change it here too. -->
-  <script type="application/ld+json">
-  {
-    "@context": "https://schema.org",
-    "@type": "FAQPage",
-    "mainEntity": [
-      {
-        "@type": "Question",
-        "name": "Do I need an account to use Heldnote?",
-        "acceptedAnswer": {
-          "@type": "Answer",
-          "text": "No. There is no sign-up, no email and no login. Heldnote has no user accounts because it has no server to hold them — open the page and start writing."
-        }
-      },
-      {
-        "@type": "Question",
-        "name": "Where are my notes stored?",
-        "acceptedAnswer": {
-          "@type": "Answer",
-          "text": "In your own browser, in its IndexedDB storage, on the device you are using. Nothing is uploaded. Because that storage belongs to one browser on one device, notes do not appear in another browser unless you move them there with a backup file or a Google Drive backup you control."
-        }
-      },
-      {
-        "@type": "Question",
-        "name": "What does version history keep?",
-        "acceptedAnswer": {
-          "@type": "Answer",
-          "text": "Heldnote checkpoints a note as you write and keeps those earlier versions alongside the current text. Any version can be previewed and restored without discarding what you have now. Older versions are trimmed when browser storage runs low, and the status bar says when that happens rather than hiding it."
-        }
-      },
-      {
-        "@type": "Question",
-        "name": "Can I write ASCII diagrams and tables in Heldnote?",
-        "acceptedAnswer": {
-          "@type": "Answer",
-          "text": "Yes. The writing surface uses a serif face by default for reading prose, and the editor toolbar has a monospace toggle for notes where column alignment matters — ASCII and Unicode box-drawing diagrams, tables, code and log excerpts. The setting is remembered across sessions."
-        }
-      },
-      {
-        "@type": "Question",
-        "name": "Is Heldnote free and open source?",
-        "acceptedAnswer": {
-          "@type": "Answer",
-          "text": "Yes, free with no paid tier, and the source is published on GitHub at github.com/OFCode-dev/heldnote so you can read exactly what it does \u2014 published for inspection, not licensed for reuse. It ships as plain HTML, CSS and JavaScript modules with no framework, no build step, no analytics and no third-party requests at runtime."
-        }
-      }
-    ]
-  }
-  </script>
-  <style>
-    /* Daylight Paper tokens — mirrors styles.css (docs/redesign-plan.md §2).
-       Self-contained on purpose: the landing page must not pull app CSS. */
-    @font-face {
-      font-family: "Source Serif 4";
-      font-style: normal;
-      font-weight: 400;
-      font-display: swap;
-      src: url("fonts/source-serif-4-latin.woff2") format("woff2");
-      unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-    }
-    :root {
-      color-scheme: light;
-      --bg: #FFFBEB;
-      --elevated-bg: #FFFFFF;
-      --text: #0F172A;
-      --text-secondary: #716B66;
-      --border: #EEEDED;
-      --accent: #B45309;
-      --accent-surface: #D97706;
-      --on-accent: #1C1917;
-      --serif: "Source Serif 4", Charter, "Bitstream Charter", "Iowan Old Style", Georgia, serif;
-      --ui: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-    }
-    @media (prefers-color-scheme: dark) {
-      :root {
-        color-scheme: dark;
-        --bg: #1C1917;
-        --elevated-bg: #2E2A27;
-        --text: #FAF9F6;
-        --text-secondary: #A8A29E;
-        --border: #3A3532;
-        --accent: #FBBF24;
-        --accent-surface: #D97706;
-      }
-    }
-    * { box-sizing: border-box; }
-    body {
-      margin: 0;
-      background: var(--bg);
-      color: var(--text);
-      font-family: var(--ui);
-      font-size: 16px;
-      line-height: 1.6;
-      display: flex;
-      flex-direction: column;
-      min-height: 100vh;
-      min-height: 100dvh;
-    }
-    main {
-      flex: 1;
-      width: 100%;
-      max-width: 38rem;
-      margin: 0 auto;
-      padding: clamp(3rem, 10vh, 6rem) 1.5rem 4rem;
-      text-align: center;
-    }
-    .mark { margin-bottom: 1.5rem; }
-    h1 {
-      font-family: var(--serif);
-      font-weight: 400;
-      font-size: clamp(2.1rem, 5.5vw, 3rem);
-      line-height: 1.2;
-      margin: 0 0 1rem;
-      letter-spacing: -0.01em;
-    }
-    .lede {
-      color: var(--text-secondary);
-      font-size: 1.06rem;
-      max-width: 32rem;
-      margin: 0 auto 2.5rem;
-    }
-    .cta {
-      display: inline-block;
-      background: var(--accent-surface);
-      color: var(--on-accent);
-      font-weight: 600;
-      font-size: 1rem;
-      text-decoration: none;
-      padding: 0.7rem 1.6rem;
-      border-radius: 8px;
-      transition: filter 150ms ease, transform 150ms ease;
-    }
-    .cta:hover { filter: brightness(1.06); }
-    .cta:active { transform: translateY(1px); }
-    .cta:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
-    .cta-caption {
-      margin: 0.7rem 0 0;
-      font-size: 0.82rem;
-      color: var(--text-secondary);
-    }
-    .benefits {
-      list-style: none;
-      margin: 3.5rem 0 0;
-      padding: 0;
-      display: grid;
-      gap: 1rem;
-      text-align: left;
-    }
-    .benefits li {
-      background: var(--elevated-bg);
-      border: 1px solid var(--border);
-      border-radius: 10px;
-      padding: 1.1rem 1.25rem;
-      box-shadow: 0 1px 2px rgba(28, 25, 23, 0.04), 0 8px 24px rgba(28, 25, 23, 0.04);
-    }
-    .benefits h2 {
-      font-family: var(--serif);
-      font-weight: 400;
-      font-size: 1.15rem;
-      margin: 0 0 0.25rem;
-    }
-    .benefits p {
-      margin: 0;
-      font-size: 0.92rem;
-      color: var(--text-secondary);
-    }
-    /* The FAQ carries the plain-language phrasings people actually search and
-       ask ("do I need an account", "where are my notes stored"). Rendered as
-       open <details> — collapsed answers are still indexable, but an answer
-       nobody has to click for is the one an assistant quotes accurately. */
-    .faq { margin: 3.5rem 0 0; text-align: left; }
-    .faq > h2 {
-      font-family: var(--serif);
-      font-weight: 400;
-      font-size: 1.35rem;
-      margin: 0 0 1rem;
-    }
-    .faq dt {
-      font-family: var(--serif);
-      font-size: 1.05rem;
-      margin: 1.4rem 0 0.3rem;
-    }
-    .faq dd {
-      margin: 0;
-      font-size: 0.92rem;
-      color: var(--text-secondary);
-    }
-    .faq a { color: var(--accent); }
-    footer {
-      border-top: 1px solid var(--border);
-      padding: 1.1rem 1.5rem;
-      font-size: 0.85rem;
-      color: var(--text-secondary);
-      text-align: center;
-    }
-    footer a { color: var(--accent); text-decoration: none; }
-    footer a:hover { text-decoration: underline; }
-    /* One quiet page-load reveal (subtle tier, redesign-plan §7). */
-    @media (prefers-reduced-motion: no-preference) {
-      main > * {
-        opacity: 0;
-        transform: translateY(8px);
-        animation: rise 400ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
-      }
-      main > :nth-child(2) { animation-delay: 60ms; }
-      main > :nth-child(3) { animation-delay: 120ms; }
-      main > :nth-child(4) { animation-delay: 180ms; }
-      main > :nth-child(5) { animation-delay: 240ms; }
-      main > :nth-child(6) { animation-delay: 300ms; }
-      @keyframes rise { to { opacity: 1; transform: none; } }
-    }
-  </style>
-  <script>
-    // Mirror index.html's bootstrap: apply the stored theme before first paint.
-    // These pages load no application code, so without this an explicit choice
-    // made in the app is ignored here and the OS preference wins instead.
-    // Reads only. The editor font is deliberately not mirrored — prose pages
-    // have no editor.
-    try {
-      const theme = localStorage.getItem('heldnote-theme');
-      if (theme === 'dark' || theme === 'light') {
-        document.documentElement.dataset.theme = theme;
-      }
-    } catch (e) { /* storage may be blocked; system preference applies */ }
-  </script>
-</head>
-<body>
-  <main>
-    <div class="mark" aria-hidden="true">
-      <!-- Decorative: the heading below already names the product. -->
-      <svg width="52" height="52" viewBox="0 0 36 36" aria-hidden="true" focusable="false">
-        <rect x="2" y="3" width="32" height="22" rx="2" fill="#4E7A62" stroke="#78A98D" stroke-width="1.5"/>
-        <rect x="4" y="5" width="28" height="18" rx="1" fill="#0E1116"/>
-        <line x1="7" y1="10" x2="24" y2="10" stroke="#9FC7AE" stroke-width="1.2" stroke-linecap="round"/>
-        <line x1="7" y1="13.5" x2="22" y2="13.5" stroke="#9FC7AE" stroke-width="1.2" stroke-linecap="round"/>
-        <line x1="7" y1="17" x2="19" y2="17" stroke="#9FC7AE" stroke-width="1.2" stroke-linecap="round"/>
-        <rect x="19.5" y="15.5" width="1.2" height="3" fill="#78A98D"/>
-        <rect x="15" y="25" width="6" height="4" fill="#4E7A62"/>
-        <rect x="11" y="29" width="14" height="2.5" rx="1" fill="#4E7A62"/>
-      </svg>
-    </div>
-    <h1>Write freely. Return anytime.</h1>
-    <p class="lede">Heldnote is a local-first notepad that keeps every version of every note — in your browser, on your device. No account, no server, no setup.</p>
-    <p><a class="cta" href="/">Open Heldnote</a></p>
-    <p class="cta-caption">Free · no account · nothing to install</p>
-    <ul class="benefits">
-      <li>
-        <h2>Every version, held</h2>
-        <p>The note as it was an hour ago, yesterday, last month — still there, one click away, restored without losing what you have now.</p>
-      </li>
-      <li>
-        <h2>Yours, locally</h2>
-        <p>Notes live in your browser's own storage. They leave your device only if you back them up — to a file, or to your own Google Drive.</p>
-      </li>
-      <li>
-        <h2>Honest about storage</h2>
-        <p>The status bar states two facts separately: what Heldnote has stored, and what your browser promises about keeping it. They are never blended into one reassuring green light.</p>
-      </li>
-      <li>
-        <h2>Prose or diagrams</h2>
-        <p>The writing sheet is serif, for reading. One toggle in the toolbar switches it to monospace, for the notes where columns have to line up — ASCII and box-drawing diagrams, tables, code, log excerpts.</p>
-      </li>
-    </ul>
-
-    <section class="faq">
-      <h2>Questions</h2>
-      <dl>
-        <dt>Do I need an account to use Heldnote?</dt>
-        <dd>No. There is no sign-up, no email and no login. Heldnote has no user accounts because it has no server to hold them — open the page and start writing.</dd>
-
-        <dt>Where are my notes stored?</dt>
-        <dd>In your own browser, in its IndexedDB storage, on the device you are using. Nothing is uploaded. Because that storage belongs to one browser on one device, notes do not appear in another browser unless you move them there with a backup file or a Google Drive backup you control.</dd>
-
-        <dt>What does version history keep?</dt>
-        <dd>Heldnote checkpoints a note as you write and keeps those earlier versions alongside the current text. Any version can be previewed and restored without discarding what you have now. Older versions are trimmed when browser storage runs low, and the status bar says when that happens rather than hiding it.</dd>
-
-        <dt>Can I write ASCII diagrams and tables in Heldnote?</dt>
-        <dd>Yes. The writing surface uses a serif face by default for reading prose, and the editor toolbar has a monospace toggle for notes where column alignment matters — ASCII and Unicode box-drawing diagrams, tables, code and log excerpts. The setting is remembered across sessions.</dd>
-
-        <dt>Is Heldnote free and open source?</dt>
-        <dd>Yes, free with no paid tier, and the source is <a href="https://github.com/OFCode-dev/heldnote">published on GitHub</a> so you can read exactly what it does — published for inspection, not licensed for reuse. It ships as plain HTML, CSS and JavaScript modules with no framework, no build step, no analytics and no third-party requests at runtime.</dd>
-      </dl>
-    </section>
-  </main>
-  <footer>
-    <a href="https://github.com/OFCode-dev/heldnote">Source on GitHub</a> · <a href="/privacy">Privacy</a> · <a href="/terms">Terms</a> · heldnote.app
-  </footer>
-</body>
-</html>
+<script type="application/ld+json">{"@context": "https://schema.org", "@type": "Article", "headline": "A small place for thoughts in progress.", "description": "Heldnote is a local-first browser notepad by OFCode. Its purpose is simple: make it easy to begin writing, change your mind, and return to earlier work.", "mainEntityOfPage": "https://heldnote.app/about", "image": "https://heldnote.app/social-card.png", "datePublished": "2026-10-24", "dateModified": "2026-10-24", "inLanguage": "en", "author": {"@type": "Person", "name": "Ömer Faruk Bayrak", "url": "https://github.com/OFCode-dev"}, "publisher": {"@type": "Organization", "name": "OFCode", "url": "https://github.com/OFCode-dev"}}</script>
+</head><body><a class="skip" href="#main">Skip to content</a>
+<header class="site-header wrap">
+  <a class="wordmark" href="/" aria-label="Heldnote home"><img src="/logo.svg" width="37" height="37" alt="">heldnote</a>
+  <nav class="nav" aria-label="Main navigation">
+    <a class="nav-secondary" href="/#how-it-works">How it works</a>
+    <a class="nav-secondary" href="/about">Our story</a>
+    <a class="language" href="/tr/" lang="tr" hreflang="tr">TR</a>
+    <a class="nav-open" href="/app">Open notepad <span aria-hidden="true">↗</span></a>
+  </nav>
+</header><main id="main" class="wrap"><article class="article"><p class="eyebrow">THE HELDNOTE IDEA</p><h1>A small place for thoughts in progress.</h1><p class="intro">Heldnote is a local-first browser notepad by OFCode. Its purpose is simple: make it easy to begin writing, change your mind, and return to earlier work.</p><p class="byline">By Ömer Faruk Bayrak / OFCode · Updated <time datetime="2026-10-24">24 October 2026</time></p><div class="brand-specimen"><img src="/logo.svg" width="100" height="100" alt="Heldnote’s folded H logo"><span class="wordmark">heldnote</span></div>
+<h2>Writing should begin before setup.</h2><p>A quick thought should not need a workspace, a team, or an account. Heldnote starts with a plain writing surface, separate notes and local saving. The tools stay close enough to help, and quiet enough to let you think.</p>
+<h2>Your first draft deserves a way back.</h2><p>Writing changes as you understand an idea. Version history is part of the notepad itself: a way to revisit a sentence, recover a detail and try again. Restoring an earlier version keeps the text you replace in history too.</p>
+<h2>Trust comes from being specific.</h2><p>We say where the notes live: in this browser, on this device. We distinguish a successful save from the browser’s promise to retain data. We explain that history has limits, sync carries changes, and an exported backup is worth keeping.</p><p>Heldnote’s intention is to reduce accidental text loss. It is not a promise that a browser, device or cloud provider can never fail. Read <a href="/guides/browser-note-storage">how storage works</a> before trusting any browser with your only copy.</p>
+<h2>A mark for holding onto a thought.</h2><p>The folded H brings two upright strokes together around a small shared space. A terracotta fold marks the corner of a page — a small reminder that there is another version to return to. Forest green, warm paper and a readable serif keep the visual language calm and familiar.</p>
+<h2>Built simply, with a clear boundary.</h2><p>Heldnote is plain HTML, CSS and JavaScript, hosted on GitHub Pages. Local writing needs no account. Optional Google Drive sync talks directly to Google. The interface is available in English and Turkish.</p><p>The code is <a href="https://github.com/OFCode-dev/heldnote">published for inspection</a>, with all rights reserved. It is not offered under an open-source license.</p>
+<h2>How we think about advertising.</h2><p>No advertising integration is active today. Future commercial support must be clearly labelled and must not use private note text for targeting. Third-party advertising scripts must be isolated from the origin that stores notes and Drive credentials. Adding a provider requires a separate review of placement and privacy disclosures.</p>
+<h2>The person behind the page.</h2><p>Heldnote is made by Ömer Faruk Bayrak, operating as OFCode. For product questions, write to <a href="mailto:contact@heldnote.app">contact@heldnote.app</a>. Privacy and hosting details are in the <a href="/privacy">privacy policy</a>.</p><div class="article-cta"><a class="button" href="/app">Open your notepad <span aria-hidden="true">↗</span></a></div><nav aria-label="Related pages"><a href="/">Back to Heldnote</a><a href="/guides/browser-note-storage">Browser storage guide</a><a href="/guides/history-sync-backup">History, sync and backup</a></nav></article></main><footer class="site-footer wrap">
+  <a class="wordmark" href="/"><img src="/logo.svg" width="28" height="28" alt="">heldnote</a>
+  <span>A little space for your thoughts. · By OFCode</span>
+  <div class="footer-links"><a href="/sponsorship">Sponsorship</a><a href="/about">About</a><a href="/privacy">Privacy</a><a href="/terms">Terms</a><a href="https://github.com/OFCode-dev/heldnote">Source code <span aria-hidden="true">↗</span></a></div>
+</footer></body></html>

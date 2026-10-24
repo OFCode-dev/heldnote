@@ -250,7 +250,10 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, summary:focus
   gap: 0.6rem;
   padding: 0.9rem var(--space-1) 0.75rem;
 }
-#brand svg { flex: none; display: block; }
+#brand svg, #brand img { flex: none; display: block; }
+
+/* Long scope URLs and addresses must fit narrow legal pages. */
+body.legal code, body.legal a { overflow-wrap: anywhere; }
 #brand .wordmark {
   font-family: var(--font-writing);
   font-size: 19px;

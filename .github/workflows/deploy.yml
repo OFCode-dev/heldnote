@@ -27,6 +27,11 @@ jobs:
         with:
           node-version: 20
 
+      - name: Check public pages and legal links
+        run: |
+          node tests/public-pages.mjs
+          node tests/legal-links.mjs
+
       - name: Install test tooling
         run: npm install --no-save playwright@1 http-server@14 wait-on@7
 

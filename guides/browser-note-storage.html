@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Where does an online notepad save your notes? — Heldnote</title>
+<meta name="description" content="Heldnote saves notes in this browser’s IndexedDB storage, on this device. They are not uploaded to an OFCode notes server. Google Drive sync is a separate, optional choice.">
+<link rel="canonical" href="https://heldnote.app/guides/browser-note-storage">
+<meta name="robots" content="index,follow,max-image-preview:large">
+<meta name="theme-color" content="#F4F1E9">
+<link rel="icon" type="image/svg+xml" href="/logo.svg">
+<link rel="icon" type="image/png" sizes="32x32" href="/icon-32.png">
+<link rel="apple-touch-icon" href="/icon-180.png">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="preload" href="/fonts/source-serif-4-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="/public.css">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Heldnote">
+<meta property="og:title" content="Where does an online notepad save your notes? — Heldnote">
+<meta property="og:description" content="Heldnote saves notes in this browser’s IndexedDB storage, on this device. They are not uploaded to an OFCode notes server. Google Drive sync is a separate, optional choice.">
+<meta property="og:url" content="https://heldnote.app/guides/browser-note-storage">
+<meta property="og:locale" content="en_US">
+<meta property="og:image" content="https://heldnote.app/social-card.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="Heldnote — a little space for your thoughts.">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:image" content="https://heldnote.app/social-card.png">
+
+<script type="application/ld+json">{"@context": "https://schema.org", "@type": "Article", "headline": "Where does an online notepad save your notes?", "description": "Heldnote saves notes in this browser’s IndexedDB storage, on this device. They are not uploaded to an OFCode notes server. Google Drive sync is a separate, optional choice.", "mainEntityOfPage": "https://heldnote.app/guides/browser-note-storage", "image": "https://heldnote.app/social-card.png", "datePublished": "2026-10-24", "dateModified": "2026-10-24", "inLanguage": "en", "author": {"@type": "Person", "name": "Ömer Faruk Bayrak", "url": "https://github.com/OFCode-dev"}, "publisher": {"@type": "Organization", "name": "OFCode", "url": "https://github.com/OFCode-dev"}}</script>
+</head><body><a class="skip" href="#main">Skip to content</a>
+<header class="site-header wrap">
+  <a class="wordmark" href="/" aria-label="Heldnote home"><img src="/logo.svg" width="37" height="37" alt="">heldnote</a>
+  <nav class="nav" aria-label="Main navigation">
+    <a class="nav-secondary" href="/#how-it-works">How it works</a>
+    <a class="nav-secondary" href="/about">Our story</a>
+    <a class="language" href="/tr/" lang="tr" hreflang="tr">TR</a>
+    <a class="nav-open" href="/app">Open notepad <span aria-hidden="true">↗</span></a>
+  </nav>
+</header><main id="main" class="wrap"><article class="article"><p class="eyebrow">A HELDNOTE FIELD GUIDE</p><h1>Where does an online notepad save your notes?</h1><p class="intro">Heldnote saves notes in this browser’s IndexedDB storage, on this device. They are not uploaded to an OFCode notes server. Google Drive sync is a separate, optional choice.</p><p class="byline">By Ömer Faruk Bayrak / OFCode · Updated <time datetime="2026-10-24">24 October 2026</time></p><h2>What does “local-first” mean here?</h2>
+<p>Your browser holds the working copy of your notes. Heldnote writes drafts locally as you type and keeps periodic versions. You can write without creating an account. Local saving does not need a Google connection.</p>
+<p>Local-first describes where the working copy lives. It does not mean your browser can never lose data, and it does not mean the application is end-to-end encrypted.</p>
+<h2>Which browser can see my notes?</h2>
+<p>Browser storage is separated by origin: the combination of protocol, hostname and port. Notes on <strong>https://heldnote.app</strong> belong to that origin and this browser profile. Changing from the homepage to <strong>/app</strong> keeps the same origin and the same note database.</p>
+<p>A different browser, profile, device or subdomain has a separate store. Notes do not automatically appear there. Use a JSON export/import or explicitly connect Drive sync to carry your library across.</p>
+<h2>What happens when I clear browsing data?</h2>
+<p>Clearing cookies and site data for Heldnote can erase the local database, including notes and their version history. A private window may discard its storage when the private session ends. A browser can also evict storage under pressure.</p>
+<div class="callout"><p><strong>A saved note and a retained note are different facts.</strong> Heldnote’s status bar reports the local save state separately from the browser’s storage-retention state. Neither replaces a backup that you control.</p></div>
+<h2>How do I keep an independent copy?</h2>
+<ol><li>Open <strong>Export &amp; import</strong> in the notepad sidebar.</li><li>Choose the JSON export option and save the downloaded file somewhere you can find again.</li><li>Keep an additional copy outside this device for important writing.</li><li>To recover, use import as copies first. Replacing a library is a separate, destructive action with its own warning.</li></ol>
+<p>A JSON export contains readable note text and history. Treat it as a personal document: keep it in a location you trust.</p>
+<h2>What changes when I connect Google Drive?</h2>
+<p>Heldnote requests the narrow <strong>drive.appdata</strong> permission. It reads and writes a sync file in the app-specific part of your own Drive, rather than reading your other Drive documents. The transfer goes directly from your browser to Google.</p>
+<p>Synchronization can carry edits and deletions between devices. It is useful for continuity, but an independent file export is still valuable. See <a href="/guides/history-sync-backup">history, sync and backup</a> for the differences.</p>
+<h2>Does it work without the internet?</h2>
+<p>You can continue editing an already loaded page without a connection. Opening or reloading the website offline is not guaranteed because Heldnote currently has no service worker for offline loading. Drive sync waits for both a usable connection and a valid authorization token.</p>
+<h2>Who can read the local database?</h2>
+<p>Code running on the same website origin has access to its browser storage. This is why Heldnote does not load advertising or analytics scripts into the notepad. Optional Google authorization uses Google’s Identity Services library. See the <a href="/privacy">privacy policy</a> for the actual data flow.</p>
+<h2>Sources and further reading</h2><ul class="source-list"><li><a href="https://developer.mozilla.org/en-US/docs/Web/Security/Defenses/Same-origin_policy">MDN: same-origin policy and browser storage</a></li><li><a href="https://developer.mozilla.org/en-US/docs/Web/API/Storage_API/Storage_quotas_and_eviction_criteria">MDN: storage quotas and eviction</a></li><li><a href="https://developers.google.com/workspace/drive/api/guides/appdata">Google Drive: application-specific data</a></li><li><a href="https://github.com/OFCode-dev/heldnote">Heldnote source code</a> — published for inspection, with all rights reserved.</li></ul><div class="article-cta"><a class="button" href="/app">Open your notepad <span aria-hidden="true">↗</span></a></div><nav aria-label="Related pages"><a href="/">Back to Heldnote</a><a href="/guides/browser-note-storage">Browser storage guide</a><a href="/guides/history-sync-backup">History, sync and backup</a></nav></article></main><footer class="site-footer wrap">
+  <a class="wordmark" href="/"><img src="/logo.svg" width="28" height="28" alt="">heldnote</a>
+  <span>A little space for your thoughts. · By OFCode</span>
+  <div class="footer-links"><a href="/sponsorship">Sponsorship</a><a href="/about">About</a><a href="/privacy">Privacy</a><a href="/terms">Terms</a><a href="https://github.com/OFCode-dev/heldnote">Source code <span aria-hidden="true">↗</span></a></div>
+</footer></body></html>
