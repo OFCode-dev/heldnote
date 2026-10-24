@@ -154,3 +154,9 @@ Review these tasks at phone and desktop widths before building real storage or
 a pricing page. Turkish prototype localization, saved views and batch export
 remain later work. Keep release QA and owner approval as independent gates.
 See [MEMORY.md](MEMORY.md) for validation and exact remaining decisions.
+
+A separate [organization compatibility experiment](ORGANIZATION_COMPATIBILITY.md)
+preserves an embedded legacy backup and validates versioned snapshot metadata.
+It is test-only, not connected to this UI or real storage. Current old-client
+import/Drive paths demonstrably discard unknown fields; live organization sync
+and migration remain gated on an explicit compatibility design.

@@ -34,6 +34,12 @@
   open browser storage, read tokens or contact services. Reload discards samples.
 - Preview JSON has its own `format` and `version`; it is not a production
   backup or Drive payload. Reject files in both directions without mutation.
+- The separate organization snapshot codec is a pure, test-only compatibility
+  experiment, not a UI feature or migration. Read
+  [ORGANIZATION_COMPATIBILITY.md](ORGANIZATION_COMPATIBILITY.md) before changing
+  metadata contracts. Preserve its embedded legacy backup string exactly.
+  Old import/Drive paths discard unknown fields; arbitrary meta references are
+  not remapped when notes are copied. Do not enable live sync from parse success.
 - A different URL path does not provide a security boundary on the same
   origin. Isolation here depends on no storage/service access, no production
   imports and tested fixtures. Keep it out of public navigation and sitemap.

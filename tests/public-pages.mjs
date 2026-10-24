@@ -69,8 +69,9 @@ assert.ok(!sitemap.includes('/preview/'),'prototype stays out of the sitemap');
 for(const [,file] of pages){
  assert.ok(!readFileSync(join(root,file),'utf8').includes('/preview/'),'public pages must not promote the prototype');
 }
-for(const file of ['preview/premium/model.js','preview/premium/preview.js']){
+for(const file of ['preview/premium/model.js','preview/premium/preview.js','preview/premium/organization-codec.js']){
  const code=readFileSync(join(root,file),'utf8');
  assert.ok(!/indexedDB|localStorage|sessionStorage|fetch\s*\(|\.\.\//.test(code),file+' must not access storage, services or production modules');
 }
+assert.ok(!readFileSync(join(root,'preview/premium/preview.js'),'utf8').includes('organization-codec'),'compatibility experiment is not integrated into the prototype UI');
 console.log('public-pages: OK (6 public pages, metadata, links, schema, PWA identity and storage boundary)');

@@ -6,6 +6,9 @@ Updated 24 October 2026. Engineering handoff; no customer data belongs here.
 
 - Working branch: `feature/brand-landing`. Clean at the start of the Premium
   prototype slice; prior head `e4a2c67`. No unknown edits were present.
+- The standalone compatibility slice began clean at accepted prototype commit
+  `ad652cb`. Prototype usability remains an owner checkpoint; existing preview
+  browser QA was accepted and was not rerun for this pure codec work.
 - [Draft PR #1](https://github.com/OFCode-dev/heldnote/pull/1) contains OAuth
   lifecycle fixes. [Draft PR #2](https://github.com/OFCode-dev/heldnote/pull/2)
   is stacked on its branch and contains landing/brand/sponsor preparation,
@@ -51,7 +54,7 @@ Updated 24 October 2026. Engineering handoff; no customer data belongs here.
 
 - Baseline before this slice: 167 browser tests, public-page checks and legal
   links passed.
-- Updated unit suite: 179 browser tests pass, including 12 targeted prototype
+- Accepted prototype unit suite: 179 browser tests passed, including 12 targeted prototype
   tests. Synthetic production backup checks confirm mutual file rejection and
   preserve exact note/draft/history text; existing backup import still works.
 - The preview browser check covers denied storage, collection retention,
@@ -60,6 +63,29 @@ Updated 24 October 2026. Engineering handoff; no customer data belongs here.
   handling, five widths, JS-off and no remote requests. The browser check passes.
 - Static route checks enforce noindex, sitemap/navigation exclusion and no
   production imports/storage calls from preview modules. Legal links pass.
+
+## Organization compatibility experiment
+
+- [Decision record](ORGANIZATION_COMPATIBILITY.md) documents the actual backup,
+  import/copy/merge and Drive validate/signature/merge/upload contracts.
+- `preview/premium/organization-codec.js` is standalone and pure, imported by
+  tests only. It wraps original schema-1 backup JSON text with version-1
+  collections/templates/membership metadata. No storage/network or UI access,
+  production schema migration, metadata upload, entitlement or activation.
+- Strict new-format fields/version checks reject unsupported semantics,
+  duplicate IDs/history keys, duplicate memberships and orphan references.
+  Exact-target binding refuses a different backup even when note IDs match.
+- Updated suite: 208 browser tests pass, including 29 compatibility checks and
+  executable synthetic refusal fixtures. Tests preserve embedded backup bytes,
+  note/history/template strings and actual legacy import/export content. The
+  current importer rejects the new envelope/future backups before overwriting
+  a synthetic existing note and history.
+- Evidence explicitly shows old backup round trips stripping unknown fields;
+  copy mode leaves arbitrary meta note references stale; Drive validation and
+  upload discard metadata; current signatures ignore organization-only edits.
+  Higher Drive schemaVersion alone does not gate old clients; syncFormat does.
+- This proves an incompatibility boundary, not mixed-version live sync. The
+  existing preview/UI/production paths and localized routes remain unchanged.
 
 ## Remaining gates
 
@@ -72,9 +98,11 @@ Updated 24 October 2026. Engineering handoff; no customer data belongs here.
    recovery and latency/quota measurements. Simulated tests do not close these.
 3. Owner approval before production. Review #1, then retarget #2 to main after
    #1 merges; merging main triggers deploy. No merge is authorized now.
-4. Before real collections/templates: approve data format and old-client
-   behavior; test schema upgrade/rollback constraints, independent backup,
-   import/export and Drive merge compatibility. Never gate existing notes.
+4. Before real collections/templates: decide live-library binding, copy-ID
+   remapping, merge/deletion/concurrent metadata semantics and a transport
+   transition. The offline snapshot codec does not solve those. Approve and
+   test atomic migration/restore, old tabs/clients, rollback constraints,
+   independent backup and Drive compatibility. Never gate existing notes.
 5. Before sales: validate useful scope/price, choose seller entity/country,
    verify provider onboarding/payouts, approve license/support/refund terms and
    separate trusted fulfillment infrastructure. No browser-shipped secrets.
