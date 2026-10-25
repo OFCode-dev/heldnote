@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Your notepad — Heldnote</title>
+  <meta name="robots" content="noindex,follow">
+  <meta name="description" content="Write locally with autosave and version history. Export a backup or optionally sync through your own Google Drive.">
+  <link rel="canonical" href="https://heldnote.app/app">
+  <script>
+    // Apply the stored theme and writing face before first paint to avoid a
+    // flash. editor.js owns the font preference; this only mirrors it early,
+    // so a monospace note does not paint in serif and then reflow.
+    try {
+      const theme = localStorage.getItem('heldnote-theme');
+      if (theme === 'dark' || theme === 'light') {
+        document.documentElement.dataset.theme = theme;
+      }
+      if (localStorage.getItem('heldnote-editor-font') === 'mono') {
+        document.documentElement.dataset.editorFont = 'mono';
+      }
+    } catch (e) { /* storage may be blocked; system preference applies */ }
+  </script>
+  <link rel="preload" href="fonts/source-serif-4-latin.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" type="image/svg+xml" href="/logo.svg">
+  <link rel="icon" type="image/png" sizes="32x32" href="icon-32.png">
+  <link rel="apple-touch-icon" href="icon-180.png">
+  <meta name="theme-color" content="#FFFBEB" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#1C1917" media="(prefers-color-scheme: dark)">
+  <meta name="theme-color" content="#FFFBEB">
+  <meta property="og:title" content="Heldnote — local-first notes with version history">
+  <meta property="og:description" content="Write locally with autosave and version history. Export a backup or optionally sync through your own Google Drive.">
+  <meta property="og:url" content="https://heldnote.app/app">
+  <meta property="og:image" content="https://heldnote.app/social-card.png">
+  <meta property="og:image:alt" content="Heldnote’s folded H mark.">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="Heldnote">
+  <meta property="og:locale" content="en">
+  <meta property="og:locale:alternate" content="tr">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Heldnote — local-first notes with version history">
+  <meta name="twitter:description" content="Write locally with autosave and version history. Export a backup or optionally sync through your own Google Drive.">
+  <meta name="twitter:image" content="https://heldnote.app/social-card.png">
+
+</head>
+<body>
+  <!-- The app shell below is empty until app.js runs, so this document has no
+       prose of its own. That is a real gap for anything that reads the page
+       without executing scripts — a crawler, an answer engine, a text browser,
+       or a visitor with JS disabled, who would otherwise see a blank cream
+       page and no explanation. /about carries the full description. -->
+  <noscript>
+    <div id="noscript-note">
+      <h1>Heldnote — local-first notes with version history</h1>
+      <p>Heldnote is a browser notepad with local autosave and version history. Notes are stored in your own browser, with no account and no server. It needs JavaScript to run, because the notes live in the browser's IndexedDB storage rather than on a server.</p>
+      <p><a href="/about">Read what Heldnote does</a> · <a href="/privacy">Privacy</a> · <a href="/terms">Terms</a> · <a href="https://github.com/OFCode-dev/heldnote">Source on GitHub</a></p>
+    </div>
+  </noscript>
+  <div id="app">
+    <div id="app-notices" aria-live="polite"></div>
+    <aside id="notes-panel"></aside>
+    <main id="editor-panel"></main>
+    <aside id="history-panel" hidden></aside>
+    <footer id="status-bar">
+      <span id="status-revision"></span>
+      <span id="status-retention"></span>
+      <span id="status-notice" role="status" aria-live="polite" aria-atomic="true" hidden></span>
+      <span id="status-counts"></span>
+      <!-- The only route from the app itself to the policy. The noscript
+           block above serves crawlers; a user with JS never sees it. One
+           link, not two: #status-bar is flex-wrap:nowrap from 768px up
+           (styles.css @media min-width:768px) and already carries three
+           spans, so a second link risks overflow in that single-row band.
+           Below 768px the bar wraps freely. /privacy links onward to
+           /terms. -->
+      <a id="status-legal" href="/privacy">Privacy</a>
+      <!-- The save state, for assistive technology only. #status-revision
+           cannot carry the live region itself: its visible text ends in a
+           timestamp that changes on every flush, so a screen reader would
+           re-announce "Saved locally" continuously while someone types. app.js
+           writes the bare state phrase here, and only when it changes. Cursor
+           position and word count are deliberately never announced. -->
+      <span id="status-a11y" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></span>
+    </footer>
+  </div>
+  <script type="module" src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" fill="none">
+  <title>Heldnote — the held fold, reversed</title>
+  <rect width="48" height="48" rx="13" fill="#26483D"/>
+  <path d="M10 9h8v12h12V9h8v30h-8V28H18v11h-8V9Z" fill="#F4F1E9"/>
+  <path d="M30 9h8v8l-8-8Z" fill="#E9A88F"/>
+</svg>

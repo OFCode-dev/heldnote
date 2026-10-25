@@ -1,30 +1,41 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<!-- Two URLs, on purpose. / is the app; /about is the page that explains it in
-     prose a crawler can read. Everything else in this repo is an asset or a
-     test page. lastmod is maintained by hand — this site has no build step. -->
-<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+<?xml version='1.0' encoding='utf-8'?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" xmlns:xhtml="http://www.w3.org/1999/xhtml">
   <url>
     <loc>https://heldnote.app/</loc>
-    <lastmod>2026-08-21</lastmod>
-    <changefreq>weekly</changefreq>
-    <priority>1.0</priority>
+    <lastmod>2026-10-24</lastmod>
+    <xhtml:link rel="alternate" hreflang="en" href="https://heldnote.app/" />
+    <xhtml:link rel="alternate" hreflang="tr" href="https://heldnote.app/tr/" />
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://heldnote.app/" />
+  </url>
+  <url>
+    <loc>https://heldnote.app/tr/</loc>
+    <lastmod>2026-10-24</lastmod>
+    <xhtml:link rel="alternate" hreflang="en" href="https://heldnote.app/" />
+    <xhtml:link rel="alternate" hreflang="tr" href="https://heldnote.app/tr/" />
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://heldnote.app/" />
   </url>
   <url>
     <loc>https://heldnote.app/about</loc>
-    <lastmod>2026-08-21</lastmod>
-    <changefreq>monthly</changefreq>
-    <priority>0.8</priority>
+    <lastmod>2026-10-24</lastmod>
+  </url>
+  <url>
+    <loc>https://heldnote.app/guides/browser-note-storage</loc>
+    <lastmod>2026-10-24</lastmod>
+  </url>
+  <url>
+    <loc>https://heldnote.app/guides/history-sync-backup</loc>
+    <lastmod>2026-10-24</lastmod>
+  </url>
+  <url>
+    <loc>https://heldnote.app/sponsorship</loc>
+    <lastmod>2026-10-24</lastmod>
   </url>
   <url>
     <loc>https://heldnote.app/privacy</loc>
-    <lastmod>2026-08-23</lastmod>
-    <changefreq>yearly</changefreq>
-    <priority>0.5</priority>
+    <lastmod>2026-10-24</lastmod>
   </url>
   <url>
     <loc>https://heldnote.app/terms</loc>
-    <lastmod>2026-08-23</lastmod>
-    <changefreq>yearly</changefreq>
-    <priority>0.5</priority>
+    <lastmod>2026-10-24</lastmod>
   </url>
 </urlset>

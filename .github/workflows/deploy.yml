@@ -27,6 +27,11 @@ jobs:
         with:
           node-version: 20
 
+      - name: Check public pages and legal links
+        run: |
+          node tests/public-pages.mjs
+          node tests/legal-links.mjs
+
       - name: Install test tooling
         run: npm install --no-save playwright@1 http-server@14 wait-on@7
 
@@ -40,7 +45,9 @@ jobs:
         run: npx wait-on http://127.0.0.1:8080/tests.html
 
       - name: Run browser test suite
-        run: node .github/scripts/run-tests.mjs
+        run: |
+          node .github/scripts/run-tests.mjs
+          node tests/premium-preview-browser.mjs
 
   deploy:
     name: Deploy to GitHub Pages

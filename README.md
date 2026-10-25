@@ -1,6 +1,6 @@
 # Heldnote
 
-A browser notepad whose defining promise is that nothing you type is ever lost.
+A local-first browser notepad designed to prevent accidental text loss.
 
 Multiple notes, saved continuously to IndexedDB, with a version history you can
 step back through. No account, no server, no build step — open the page and write.
@@ -8,6 +8,40 @@ step back through. No account, no server, no build step — open the page and wr
 Part of the OFCode "Quick" family, alongside
 [Quick Web Notepad](https://github.com/OFCode-dev/quick-web-notepad) (its
 single-pad predecessor) and the Quick screenshot-to-clipboard extensions.
+
+## Public site and brand
+
+The public experience is static HTML with self-hosted assets. The English
+landing page is at /, the Turkish equivalent at /tr/, and the notepad at /app.
+About and two practical guides explain storage, history, sync and independent
+backups. The public sponsor invitation links to /sponsorship; no paid sponsor
+is active. See BRAND.md for the identity, copy principles and commercial boundary.
+
+Moving from / to /app changes only the path, so the existing IndexedDB
+database, preferences and cached Drive token stay on the same origin. There is
+no data migration. Existing installed apps keep the same manifest start URL
+and identity; the public script opens /app when launched in standalone mode.
+Real installed-app behavior still needs device QA.
+
+Public copy, navigation and FAQs work without JavaScript. The small history
+demo uses sample text and never opens IndexedDB or the token cache. /app is
+marked noindex and excluded from the sitemap. Public pages have unique
+metadata, linked product entities and reciprocal English/Turkish alternates.
+These are discovery foundations, not a guarantee of rankings or AI citations.
+
+No advertising or analytics integration has been activated. A first-party
+static sponsorship is the lowest-complexity option; programmatic advertising
+requires the separate-origin and consent work described in BRAND.md.
+
+The [Premium proposal](PREMIUM_PLAN.md) records a possible one-time paid
+productivity bundle and its validation/release gates. It does not implement
+billing or change the current free feature set. The English sample-only
+prototype at `/preview/premium/` explores collections and personal templates
+in session memory; it never opens real notes or browser storage. Reload resets
+it. Its optional JSON files are for the preview only, not production backups.
+
+For ongoing work, start with [AGENTS.md](AGENTS.md), [CODEX.md](CODEX.md) and
+[MEMORY.md](MEMORY.md); these record execution boundaries and remaining gates.
 
 ## Status
 
@@ -175,6 +209,11 @@ the privacy disclosures to describe the actual provider and data use. Private
 note text must not be passed to advertising or used as ad targeting data.
 
 ## Tests
+
+Static public-page and legal-link checks need only Node:
+
+    node tests/public-pages.mjs
+    node tests/legal-links.mjs
 
 `tests.html` is the browser test runner; open it directly to watch the suite in
 a real browser. For a headless run:

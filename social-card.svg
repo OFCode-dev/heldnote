@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630">
+  <rect width="1200" height="630" fill="#F4F1E9"/>
+  <path d="M65 543h1070" stroke="#D0D8C9"/>
+  <g transform="translate(66 56) scale(1.5)">
+    <path d="M10 9h8v12h12V9h8v30h-8V28H18v11h-8V9Z" fill="#26483D"/>
+    <path d="M30 9h8v8l-8-8Z" fill="#C4694B"/>
+  </g>
+  <text x="144" y="109" font-family="Georgia,serif" font-size="47" fill="#26483D" letter-spacing="-2">heldnote</text>
+  <text x="76" y="275" font-family="Georgia,serif" font-size="96" fill="#26483D" letter-spacing="-4">Your thoughts,</text>
+  <text x="76" y="380" font-family="Georgia,serif" font-style="italic" font-size="100" fill="#A54D34" letter-spacing="-4">held onto.</text>
+  <text x="80" y="459" font-family="Arial,sans-serif" font-size="22" fill="#647169">A free browser notepad with version history.</text>
+  <text x="80" y="583" font-family="Arial,sans-serif" font-size="17" fill="#647169">A little space for your thoughts.</text>
+  <text x="1130" y="583" text-anchor="end" font-family="Arial,sans-serif" font-size="18" fill="#26483D">heldnote.app</text>
+  <g transform="translate(955 220) rotate(10)">
+    <rect width="145" height="180" rx="9" fill="#DDE5D5"/>
+    <rect x="14" y="-15" width="145" height="180" rx="9" fill="#FCFAF4" stroke="#B6C6AF" stroke-width="2"/>
+    <path d="M43 32h83M43 56h83M43 80h60" stroke="#617A60" stroke-width="4" stroke-linecap="round"/>
+    <path d="M124 134h35v-35" fill="#E9C5AF"/>
+  </g>
+</svg>
