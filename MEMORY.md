@@ -1,6 +1,6 @@
 # Heldnote current decisions and gates
 
-Updated 24 October 2026. Engineering handoff; no customer data belongs here.
+Updated 26 October 2026. Engineering handoff; no customer data belongs here.
 
 ## Review state
 
@@ -15,8 +15,11 @@ Updated 24 October 2026. Engineering handoff; no customer data belongs here.
   the Premium proposal and the isolated prototype. Neither is merged.
 - Repository visibility was checked: it is public. Draft PR status does not
   make source private; no visibility or access setting was changed.
-- Production is unchanged. No DNS, Cloud console, real Google login, sponsor
-  outreach, payment activation or ad activation was performed in this slice.
+- Production was unchanged during the prototype and compatibility slices.
+  On 26 October the owner approved only the public-contact publication; see
+  the separate release record below. OAuth/brand/Premium drafts stay unmerged.
+  No DNS, Cloud console, real Google login, sponsor outreach, payment or ad
+  activation is included in the contact release.
 
 ## Durable decisions
 
@@ -101,8 +104,11 @@ Updated 24 October 2026. Engineering handoff; no customer data belongs here.
 2. Before release: real phone/desktop Drive round trip, offline/conflict and
    fresh-browser recovery; installed Safari/Chrome behavior; real draft
    recovery and latency/quota measurements. Simulated tests do not close these.
-3. Owner approval before production. Review #1, then retarget #2 to main after
-   #1 merges; merging main triggers deploy. No merge is authorized now.
+3. Owner approval is still required for OAuth/brand/Premium publication. Review
+   #1, then retarget #2 to main after #1 merges; merging main triggers deploy.
+   The separate contact-only PR #3 was approved; that approval does not cover
+   merging draft #1 or #2. Reconcile their legal revision dates with current
+   main before a future release rather than reverting the contact release date.
 4. Before real collections/templates: decide live-library binding, copy-ID
    remapping, merge/deletion/concurrent metadata semantics and a transport
    transition. The offline snapshot codec does not solve those. Approve and
@@ -144,3 +150,28 @@ explicit follow-up work. The current English prototype is for review only.
   the OAuth draft's three contact files also passes its 4-page legal checker
   and 8 mailto checks. No app/storage/auth code changed; browser suites were
   not rerun for this content-only correction.
+
+## Contact-only publication — 26 October 2026
+
+- The owner approved publication after the contact-correction report. Interpret
+  that approval narrowly: current production contacts only, not OAuth fixes,
+  the landing redesign, sponsorship placement or Premium development.
+- [PR #3](https://github.com/OFCode-dev/heldnote/pull/3) starts from production
+  `9c71112` and changes only LICENSE, privacy.html and terms.html. Eight mailto
+  recipients/visible contacts use the confirmed address; the two legal revision
+  dates are 26 October 2026. Runtime, storage, Google and workflow files match
+  the previous production revision.
+- PR #3 was merged at `a6c2f8e`; the existing
+  [test-and-deploy run](https://github.com/OFCode-dev/heldnote/actions/runs/40240397899)
+  completed successfully, including its browser test and GitHub Pages deploy
+  jobs. Draft #1/#2 remain open, unmerged and stacked. About and
+  Sponsorship contact copy remains in draft #2 until its separate approval.
+- Targeted legal-link checks passed on the exact production snapshot (4 legal
+  routes, 8 mailto recipients). No email was sent and no mailbox/domain/account
+  configuration or DNS/OAuth Console setting was changed.
+- Post-release source verification confirms main tree `aeb09eb` differs from
+  prior production only in the three approved contact/legal files. The live
+  /privacy and /terms read attempts returned the web tool's Internal Error /
+  “not accessible via this tool” (with and without a cache-busting query).
+  Stop that access check; no alternate access path was used. Deployment is
+  confirmed by GitHub, but an independent live HTML read remains unverified.
